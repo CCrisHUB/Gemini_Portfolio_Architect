@@ -1,7 +1,10 @@
+================================================================================
 import pandas as pd
 import os
 import io
 import json
+import re
+import glob
 from datetime import datetime
 from google import genai
 from google.genai import types
@@ -12,15 +15,52 @@ DATA_DIR = "data"
 ALL_ACCOUNTS_CSV = os.path.join(DATA_DIR, "PortfolioDownload_AllAccounts.csv")
 IRA_CSV = os.path.join(DATA_DIR, "PortfolioDownload_5669.csv")
 
-# Avenue C Semantic Memory: Ticker to Bucket Routing Map
-TICKER_BUCKET_MAP = {
-    'GSLC': 2, 'QUAL': 2, 'SCHG': 2, 'SCHX': 2,
-    'MAIN': 3, 'O': 3, 'SCHD': 3, 
-    'AVUV': 4, 'SCHA': 4, 'SCHM': 4,
-    'AVDV': 5, 'EMXC': 5, 'VIGI': 5, 'VXUS': 5,
-    'VIG': 7, 
-    'USFR': 8
-}
+def parse_previous_ledger(data_dir):
+    print("System: Parsing previous ledger for persistent state...")
+    files = glob.glob(os.path.join(data_dir, "GEM_Retirement_Portfolio_Ledger_*.txt"))
+    if not files:
+        raise FileNotFoundError("FATAL: No previous ledger found to extract state.")
+    
+    latest_file = sorted(files)[-1]
+    
+    # Dynamically extract the ledger version from the filename
+    version_match = re.search(r'_v(\d+)\.txt', latest_file)
+    ledger_version = int(version_match.group(1)) if version_match else 0
+    
+    with open(latest_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+        
+    tax_match = re.search(r'(PERSISTENT YTD TAX LEDGER.*?)(?=\n-{50,}\n+DATE-AWARE SPENDING PACING ENGINE)', content, re.DOTALL)
+    tax_text = tax_match.group(1).strip() if tax_match else "PERSISTENT YTD TAX LEDGER\n[DATA NOT FOUND]"
+    
+    b1_match = re.search(r'(\[BUCKET 1\] LIQUIDITY & PRESERVATION.*?)(?=\n-{50,}\n+\[BUCKET 2\])', content, re.DOTALL)
+    b1_text = b1_match.group(1).strip() if b1_match else "[BUCKET 1] LIQUIDITY & PRESERVATION\n[DATA NOT FOUND]"
+    
+    uninvested = float(re.search(r'Uninvested Brokerage Cash.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'Uninvested Brokerage Cash.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
+    op_cash = float(re.search(r'Operational Cash Buffer.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'Operational Cash Buffer.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
+    etrade_cds = float(re.search(r'E\*TRADE CD Ladder.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'E\*TRADE CD Ladder.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
+    ext_cds = float(re.search(r'External Bank Capital.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'External Bank Capital.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
+    
+    dynamic_ticker_map = {}
+    # FIX: Added (.*?) capturing group to correctly unpack the tuple (bucket_number, bucket_content)
+    bucket_blocks = re.findall(r'\[BUCKET (\d)\](.*?)(?=\n\[BUCKET|\n={80})', content, re.DOTALL)
+    for b_num, b_content in bucket_blocks:
+        b_idx = int(b_num)
+        if b_idx >= 2:
+            tickers = re.findall(r'\*\s+([A-Z]+)\s+:', b_content)
+            for t in tickers:
+                dynamic_ticker_map[t] = b_idx
+                
+    return {
+        'tax_ledger': tax_text, 
+        'bucket_1': b1_text, 
+        'uninvested_cash': uninvested, 
+        'op_cash': op_cash, 
+        'etrade_cds': etrade_cds, 
+        'ext_cds': ext_cds,
+        'ticker_map': dynamic_ticker_map,
+        'ledger_version': ledger_version
+    }
 
 def load_and_clean_csv(filepath):
     if not os.path.exists(filepath):
@@ -255,7 +295,7 @@ the Core Files and Active Mega-Prompts governing this Gem.
         f.write(content)
     print(f"System: Saved {filename}")
 
-def generate_portfolio_ledger(taxable, ira, routing_data, current_version=38):
+def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=38):
     print("System: Generating Core File 2 (Portfolio Ledger)...")
     new_version = current_version + 1
     today = datetime.now().strftime("%Y-%m-%d")
@@ -280,10 +320,12 @@ def generate_portfolio_ledger(taxable, ira, routing_data, current_version=38):
         buckets[6]['holdings'].append(line)
         buckets[6]['total'] += data['Value $']
 
-    # Process Taxable (Routed via TICKER_BUCKET_MAP)
+    dynamic_ticker_map = prev_state.get('ticker_map', {})
+
+    # Process Taxable (Routed via Dynamic Map)
     for sym, data in sorted(taxable.items()):
         if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10: continue
-        b_idx = TICKER_BUCKET_MAP.get(sym, 2) # Default to 2 if unknown
+        b_idx = dynamic_ticker_map.get(sym, 2) # Default to 2 if unknown (New Ticker)
         gain_str = f"+${data['Total Gain $']:,.2f}" if data['Total Gain $'] >= 0 else f"-${abs(data['Total Gain $']):,.2f}"
         line = f"      * {sym:<4} : {data['Quantity']:.4f} shares\n        [Price: ${data['Last Price $']:.3f} | Basis: ${data['Basis $']:,.2f} | Value: ${data['Value $']:,.2f} | {gain_str}]"
         buckets[b_idx]['holdings'].append(line)
@@ -291,11 +333,12 @@ def generate_portfolio_ledger(taxable, ira, routing_data, current_version=38):
 
     total_executed_equities = sum(b['total'] for b in buckets.values())
     
-    # Hardcoded Cash for this iteration (will be dynamic in future phases)
-    uninvested_cash = 13123.68
-    op_cash = 85000.00
-    etrade_cds = 400000.00
-    ext_cds = 100000.00
+    # Dynamic Cash from previous state
+    uninvested_cash = prev_state['uninvested_cash']
+    op_cash = prev_state['op_cash']
+    etrade_cds = prev_state['etrade_cds']
+    ext_cds = prev_state['ext_cds']
+    
     etrade_platform_assets = total_executed_equities + uninvested_cash + op_cash + etrade_cds
     combined_capital = etrade_platform_assets + ext_cds
 
@@ -307,33 +350,7 @@ Active Market Status Designation: [{market_status}]
 Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...5669)
 ================================================================================
 
-PERSISTENT YTD TAX LEDGER (TAX YEAR 2026)
---------------------------------------------------------------------------------
-0% LTCG Tax Headroom Baseline (Single Filer):         $49,200.00
-Federal Standard Deduction (2026):                     $16,100.00
-Maximum Gross Taxable Income for 0% LTCG Bracket:     $65,300.00
-
-Realized Tax Event Log:
-  - 2026-08-14 | Legacy Brokerage (...9739) Liquidation
-    * Gross Realized Capital Gains:                    +$17,317.41
-    * Harvested Capital Losses:                         -$2,585.01
-    * Net Realized LTCG:                               +$14,732.40
-  - 2026-08-28 | Individual Brokerage (...2008) Liquidation
-    * Net Realized STCG (JEPQ):                           +$273.19
-  - 2026-08-31 | Individual Brokerage (...0331 & ...7851) Liquidation
-    * Net Realized STCG (VOO, VB, VO):                 -$4,055.66
-
-YTD Cumulative Tax Summary:
-  - Ordinary Income YTD (Pension / Social Security):       $0.00
-  - Realized Short-Term Capital Gains YTD:              -$3,782.47
-  - Realized Long-Term Capital Gains (LTCG) YTD:      $14,732.40
-  - Starting 0% LTCG Headroom:                        $49,200.00
-  - Remaining 0% LTCG Headroom:                       $34,467.60
-
-30-DAY WASH-SALE LOCKOUT TRACKER:
-  - VB | Date Sold: 2026-09-01 | Lockout Expiry: 2026-10-01
-  - VO | Date Sold: 2026-09-01 | Lockout Expiry: 2026-10-01
-  - VOO | Date Sold: 2026-09-01 | Lockout Expiry: 2026-10-01
+{prev_state['tax_ledger']}
 
 --------------------------------------------------------------------------------
 
@@ -351,19 +368,7 @@ Annual Target Net Drawdown Gap: $53,249.01
 
 --------------------------------------------------------------------------------
 
-[BUCKET 1] LIQUIDITY & PRESERVATION
-  - Identity: Short-Term Liquidity, Safety, & Risk Insulation Buffer
-  - Holdings Breakdown:
-      * Operational Cash (E*TRADE Savings ...1600):    $85,000.00 [In E*TRADE]
-      * CD Bucket #1 (Matures 10/17/2026):            $100,000.00 [External]
-      * CD Bucket #2 (Matures 04/14/2027):            $100,000.00 [In E*TRADE]
-      * CD Bucket #3 (Matures 05/05/2027):            $100,000.00 [In E*TRADE]
-      * CD Bucket #4 (Matures 05/05/2027):            $100,000.00 [In E*TRADE]
-      * CD Bucket #5 (Matures 05/05/2027):            $100,000.00 [In E*TRADE]
-  - Subtotal E*TRADE Bucket 1 Capital:               $485,000.00
-  - Subtotal External Bucket 1 Capital:              $100,000.00
-  - Total Bucket 1 Liquidity:                        $585,000.00
-  - Status: ACTIVE / RECONCILED
+{prev_state['bucket_1']}
 
 --------------------------------------------------------------------------------
 """
@@ -431,9 +436,21 @@ def main():
         
         routing_data = query_strategic_routing(telemetry_payload)
         
+        # Extract previous state
+        prev_state = parse_previous_ledger(DATA_DIR)
+        
+        # Dynamically find latest Constants version
+        const_files = glob.glob(os.path.join(DATA_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt"))
+        if const_files:
+            latest_const = sorted(const_files)[-1]
+            const_match = re.search(r'_v(\d+)\.txt', latest_const)
+            const_version = int(const_match.group(1)) if const_match else 0
+        else:
+            const_version = 0
+        
         # Execute Phase 4: File Generation
-        generate_master_constants(routing_data, current_version=87)
-        generate_portfolio_ledger(taxable, ira, routing_data, current_version=38)
+        generate_master_constants(routing_data, current_version=const_version)
+        generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
         
         print("\n=== PHASE 4 COMPLETE ===")
         print("Core Files generated successfully in /data/ folder.")

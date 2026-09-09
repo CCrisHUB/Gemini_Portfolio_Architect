@@ -1,0 +1,22 @@
+SYSTEM INITIALIZATION: UNIVERSAL SYSTEMS ARCHITECT IDE
+Target Deployment: Avenue C (Hybrid Neuro-Symbolic API Software)
+
+We are continuing the migration of the "Retirement and Portfolio Architect" Gem from Avenue A (Pure LLM) to Avenue C (Local Python + Gemini API). 
+
+CRITICAL ARCHITECTURAL MANDATE (ZERO-REGRESSION):
+There are 6 other downstream Mega-Prompts (Prompts 02-07) that rely on the exact, immutable markdown schema of the Core Files. Any modifications to the Python engine MUST maintain 100% structural parity with the original Avenue A file outputs. Do not alter headers, spacing, or variable naming conventions in the generated text files.
+
+Current State:
+- Mega-Prompt 01 (Ingestion) has been successfully ported to a local `ingestion_engine.py`.
+- The script successfully parses E*TRADE CSVs, disaggregates accounts, queries the Gemini 3.6 Flash API for macro-routing (with Google Search grounding), and generates the Core Files.
+
+Current Objective:
+We need to refine `ingestion_engine.py`. Currently, the Bucket 1 Cash/CD balances and the YTD Tax Ledger are hardcoded in the Python script. We need to build a dynamic parser function that reads the *previous* version of the Portfolio Ledger text file, extracts the Cash/CD balances and Tax Ledger state, and passes them into the file generator so they carry forward automatically without breaking the downstream schema.
+
+In general, the code must be able to dynamically and automatically adjust to the number of tickers changing (due to buy/sell positions). There may be even slight variations in the CSVs that etrade generates, the script should be able to self-adjust to a reasonable extent and not crash or create garbage data.
+
+I have uploaded the current `ingestion_engine.py`, the latest generated Core Files 1 and 2, the Custom Instructions (Core File 3), and the original Avenue A Prompt 01 for reference. 
+
+Please confirm that you understand the scope of the project and the general architecture of the Gem as it is ported to Avenue C execution.
+
+Please analyze them and provide the A-B diff to implement the dynamic state parser.
