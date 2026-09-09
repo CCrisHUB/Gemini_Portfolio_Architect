@@ -32,9 +32,9 @@ the Core Files and Active Mega-Prompts governing this Gem.
    - Investor Status: Single widower, no dependents / no heirs.
    - Date of Birth: September 21, 1955 (RMD Initial Year: 2028 / Age 73).
    - Tax Filing Status: Single.
-   - CONST_ACTIVE_STD_DEDUCTION: $14,600.00 (Tax Year 2026)
-   - CONST_ACTIVE_0PCT_LTCG_LIMIT: $47,025.00 taxable income (Tax Year 2026).
-   - CONST_ACTIVE_MAX_GROSS_0PCT_LTCG: $61,625.00 ($47,025 + $14,600).
+   - CONST_ACTIVE_STD_DEDUCTION: $16,100.00 (Tax Year 2026)
+   - CONST_ACTIVE_0PCT_LTCG_LIMIT: $49,450.00 taxable income (Tax Year 2026).
+   - CONST_ACTIVE_MAX_GROSS_0PCT_LTCG: $65,550.00 ($49,450 + $16,100).
    - Target Horizon Age: Age 95 (Zero-Legacy Mandate).
    - Primary Strategy: Zero-legacy drawdown. Maximize lifestyle capital usage
      while staying within the 0% LTCG bracket headroom.
@@ -58,7 +58,7 @@ the Core Files and Active Mega-Prompts governing this Gem.
    - CONST_OPERATIONAL_CASH_BUFFER: $85,000.00 (E*TRADE Savings ...1600).
    - CONST_SAVINGS_TARGET         : $85,000.00 (Premium Savings ...1600 Target).
    - CONST_SAVINGS_FLOOR          : $20,000.00 (Minimum Cash Tank Floor).
-   - Dynamic CPI Factor           : 3.1% (Retrieved U.S. CPI Baseline)
+   - Dynamic CPI Factor           : 3.4% (Retrieved U.S. CPI Baseline)
      
    - CONST_PEAK_PORTFOLIO_NAV     : $1,733,426.88 (High-water mark tracker)
    - CONST_BASELINE_DEPLETION_AGE : Age 95 (Baseline horizon anchor)

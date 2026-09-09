@@ -59,8 +59,10 @@ def disaggregate_holdings(df_all, df_ira):
     taxable_holdings = {}
 
     for symbol, all_data in all_holdings.items():
-        if symbol.lower() in ['cash', 'total', 'nan', '']:
+        # ANTI-GIGO FIX: Drop cash, totals, and E*TRADE timestamp garbage
+        if symbol.lower() in ['cash', 'total', 'nan', ''] or 'generated' in symbol.lower() or len(symbol) > 10:
             continue
+            
         if symbol in ira_holdings:
             ira_data = ira_holdings[symbol]
             taxable_qty = all_data['Quantity'] - ira_data['Quantity']
@@ -87,35 +89,52 @@ def disaggregate_holdings(df_all, df_ira):
             }
             
     for sym, data in ira_holdings.items():
-        if sym.lower() not in ['cash', 'total', 'nan', '']:
+        if sym.lower() not in ['cash', 'total', 'nan', ''] and 'generated' not in sym.lower() and len(sym) <= 10:
             ira_holdings[sym]['Basis $'] = round(data['Value $'] - data['Total Gain $'], 2)
 
     return taxable_holdings, ira_holdings
 
 def query_strategic_routing(telemetry_payload):
-    print("System: Querying Neuro-Symbolic API for Strategic Routing...")
+    print("System: Querying Neuro-Symbolic API for Strategic Routing (Live Web Search Enabled)...")
     load_dotenv()
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
     prompt = f"""
-    You are a deterministic financial routing API. Evaluate the following telemetry payload and return ONLY a valid JSON object. Do not include markdown formatting.
+    You are a deterministic financial routing API. Evaluate the following telemetry payload and return ONLY a valid JSON object. 
+    CRITICAL: Do not include markdown formatting, backticks, or search citations in your output. Output ONLY the JSON object starting with {{ and ending with }}.
+    
     TELEMETRY PAYLOAD: {json.dumps(telemetry_payload)}
+    
     REQUIRED JSON RESPONSE:
-    1. "cpi_rate": Current U.S. CPI-U annual inflation rate (float).
+    1. "cpi_rate": Search the web for the current U.S. CPI-U annual inflation rate (float).
     2. "std_deduction": Current IRS Standard Deduction for Single filer (float).
     3. "ltcg_limit": Current IRS max taxable income for 0% LTCG bracket Single filer (float).
-    4. "market_state": Evaluate S&P 500 over last 30 days. Return exactly: "DIP / CORRECTION", "NEUTRAL / SIDEWAYS", or "RALLY / EXPANSION".
+    4. "market_state": Search the web for the S&P 500 performance over the last 30 days. Return exactly: "DIP / CORRECTION", "NEUTRAL / SIDEWAYS", or "RALLY / EXPANSION".
     5. "sourcing_decision": Based on the Tank Capacity Ratio in the payload and the market state, return the routing decision.
     """
     try:
-        response = client.models.generate_content(
+        chat = client.chats.create(
             model='gemini-3.6-flash',
-            contents=prompt,
             config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.0
+                temperature=0.0,
+                tools=[{"google_search": {}}]
             )
         )
-        return json.loads(response.text)
+        response = chat.send_message(prompt)
+        
+        if not response.text:
+            raise ValueError("API returned an empty text response.")
+            
+        # Bulletproof JSON extraction (ignores citations/markdown)
+        raw_text = response.text.strip()
+        start_idx = raw_text.find('{')
+        end_idx = raw_text.rfind('}') + 1
+        
+        if start_idx != -1 and end_idx != 0:
+            json_str = raw_text[start_idx:end_idx]
+            return json.loads(json_str)
+        else:
+            raise ValueError(f"Failed to extract JSON from API response: {raw_text}")
+            
     except Exception as e:
         raise RuntimeError(f"API Boundary Failure: {e}")
 
@@ -255,7 +274,7 @@ def generate_portfolio_ledger(taxable, ira, routing_data, current_version=38):
 
     # Process IRA (Always Bucket 6)
     for sym, data in sorted(ira.items()):
-        if sym.lower() in ['cash', 'total', 'nan', '']: continue
+        if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10: continue
         gain_str = f"+${data['Total Gain $']:,.2f}" if data['Total Gain $'] >= 0 else f"-${abs(data['Total Gain $']):,.2f}"
         line = f"      * {sym:<4} : {data['Quantity']:.4f} shares\n        [Price: ${data['Last Price $']:.3f} | Basis: ${data['Basis $']:,.2f} | Value: ${data['Value $']:,.2f} | {gain_str}]"
         buckets[6]['holdings'].append(line)
@@ -263,7 +282,7 @@ def generate_portfolio_ledger(taxable, ira, routing_data, current_version=38):
 
     # Process Taxable (Routed via TICKER_BUCKET_MAP)
     for sym, data in sorted(taxable.items()):
-        if sym.lower() in ['cash', 'total', 'nan', '']: continue
+        if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10: continue
         b_idx = TICKER_BUCKET_MAP.get(sym, 2) # Default to 2 if unknown
         gain_str = f"+${data['Total Gain $']:,.2f}" if data['Total Gain $'] >= 0 else f"-${abs(data['Total Gain $']):,.2f}"
         line = f"      * {sym:<4} : {data['Quantity']:.4f} shares\n        [Price: ${data['Last Price $']:.3f} | Basis: ${data['Basis $']:,.2f} | Value: ${data['Value $']:,.2f} | {gain_str}]"

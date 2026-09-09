@@ -2,7 +2,7 @@
 PORTFOLIO ALLOCATION LEDGER & BUCKET STRUCTURE
 Date: 2026-09-09 (Version 39)
 Framework Structure: 8 Macro Asset Buckets (Single Account Architecture)
-Active Market Status Designation: [RALLY / EXPANSION]
+Active Market Status Designation: [NEUTRAL / SIDEWAYS]
 Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...5669)
 ================================================================================
 
@@ -71,8 +71,6 @@ Annual Target Net Drawdown Gap: $53,249.01
   - Holdings (CSV Reconciled):
       * GSLC : 1039.0000 shares
         [Price: $145.160 | Basis: $115,964.62 | Value: $150,821.24 | +$34,856.62]
-      * Generated at Sep 9 2026 12:32 PM ET : 0.0000 shares
-        [Price: $0.000 | Basis: $0.00 | Value: $0.00 | +$0.00]
       * QUAL : 67.2000 shares
         [Price: $219.545 | Basis: $14,978.38 | Value: $14,753.42 | -$224.96]
       * SCHG : 5885.0000 shares
@@ -131,8 +129,6 @@ Annual Target Net Drawdown Gap: $53,249.01
 [BUCKET 6] TRADITIONAL IRA (TAX-SHELTERED CORE)
   - Account: ...5669
   - Holdings (CSV Reconciled):
-      * Generated at Sep 9 2026 12:31 PM ET : 0.0000 shares
-        [Price: $0.000 | Basis: $0.00 | Value: $0.00 | +$0.00]
       * SCHD : 1072.0000 shares
         [Price: $34.120 | Basis: $36,757.81 | Value: $36,576.75 | -$181.06]
       * VIG  : 161.3840 shares
@@ -183,5 +179,5 @@ ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
 [2026-08-29 | $1,721,814.88 | $1,136,814.88 | $585,000.00 | $0.00 | NORMAL]
 [2026-08-30 | $1,733,426.88 | $1,136,814.88 | $585,000.00 | $0.00 | NORMAL]
 [2026-09-01 | $1,731,829.88 | $1,133,706.20 | $598,123.68 | $0.00 | NORMAL]
-[2026-09-09 | $1,720,042.75 | $1,121,919.07 | $598,123.68 | $0.00 | RALLY / EXPANSION]
+[2026-09-09 | $1,720,042.75 | $1,121,919.07 | $598,123.68 | $0.00 | NEUTRAL / SIDEWAYS]
 ================================================================================
