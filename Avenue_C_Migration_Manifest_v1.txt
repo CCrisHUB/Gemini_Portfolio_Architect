@@ -1,0 +1,41 @@
+================================================================================
+AVENUE C MIGRATION MANIFEST
+Date: 2026-09-09
+Version: 3
+Status: Mega-Prompt 01 Port Complete. Awaiting Next Architectural Objective.
+================================================================================
+
+1. ARCHITECTURAL DIRECTIVE
+   - Migrating from Avenue A (Gemini Web UI) to Avenue C (Local Python + API).
+   - Goal: Deterministic CSV parsing via local Pandas; LLM restricted to 
+     strategic routing via API.
+
+2. PHASE TRACKER
+   - [COMPLETED] PHASE 1: Environment & Security Boundary
+   - [COMPLETED] PHASE 2: The Deterministic ETL Engine (Local Python)
+   - [COMPLETED] PHASE 3: The Neuro-Symbolic API Boundary
+     * `google-genai` modern SDK implemented.
+     * `gemini-3.6-flash` targeted for strict JSON schema routing.
+     * Temperature locked to 0.0 for deterministic macro-data retrieval.
+   - [COMPLETED] PHASE 4: Testing & File Generation
+     * `generate_master_constants` and `generate_portfolio_ledger` implemented.
+     * Semantic memory mapped via `TICKER_BUCKET_MAP`.
+     * Zero-regression formatting verified against Avenue A outputs.
+
+3. FILE STRUCTURE (LOCAL WORKSPACE)
+   /data/
+     PortfolioDownload_AllAccounts.csv
+     PortfolioDownload_5669.csv
+     GEM_Retirement_Master_Profile_Constants_2026-09-09_v88.txt
+     GEM_Retirement_Portfolio_Ledger_2026-09-09_v39.txt
+   /venv/                  
+   .env                    
+   .gitignore              
+   ingestion_engine.py     # Replaces Mega-Prompt 01
+   Avenue_C_Migration_Manifest_v3.txt  
+
+4. NEXT STEPS
+   - Commit current stable state to Git.
+   - Select next Mega-Prompt for Avenue C migration (e.g., Prompt 02: Fund 
+     Performance & Structural Audit).
+================================================================================
