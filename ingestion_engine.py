@@ -1,23 +1,40 @@
-================================================================================
+#ingestion_engine.py
+#"""
+#Avenue C Ingestion Engine
+#Date: 2026-09-10
+#Version: 2.0.0 (Clean Room Architecture & Decoupled Routing)
+#Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
+#"""
+__version__ = "2.0.0"
+__date__ = "2026-09-10"
+
 import pandas as pd
 import os
 import io
 import json
 import re
 import glob
-from datetime import datetime
+import shutil
+from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 
-# Define file paths
-DATA_DIR = "data"
-ALL_ACCOUNTS_CSV = os.path.join(DATA_DIR, "PortfolioDownload_AllAccounts.csv")
-IRA_CSV = os.path.join(DATA_DIR, "PortfolioDownload_5669.csv")
+# Define decoupled directory paths
+DIR_CORE_ACTIVE = "00_CORE_Files"
+DIR_CORE_ARCHIVE = "05_OLD_Core_Files"
+DIR_CSV_ACTIVE = "20_CSV_Downloads_Current"
+DIR_CSV_ARCHIVE = "50_OLD_CSV_Files"
 
-def parse_previous_ledger(data_dir):
+def get_latest_file(directory, pattern):
+    files = glob.glob(os.path.join(directory, pattern))
+    if not files:
+        raise FileNotFoundError(f"FATAL: No files found matching pattern: {pattern} in {directory}")
+    return sorted(files)[-1]
+
+def parse_previous_ledger(core_dir):
     print("System: Parsing previous ledger for persistent state...")
-    files = glob.glob(os.path.join(data_dir, "GEM_Retirement_Portfolio_Ledger_*.txt"))
+    files = glob.glob(os.path.join(core_dir, "GEM_Retirement_Portfolio_Ledger_*.txt"))
     if not files:
         raise FileNotFoundError("FATAL: No previous ledger found to extract state.")
     
@@ -59,8 +76,110 @@ def parse_previous_ledger(data_dir):
         'etrade_cds': etrade_cds, 
         'ext_cds': ext_cds,
         'ticker_map': dynamic_ticker_map,
-        'ledger_version': ledger_version
+        'ledger_version': ledger_version,
+        'file_path': latest_file
     }
+
+def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers):
+    today = datetime.now()
+    today_str = today.strftime("%Y-%m-%d")
+    
+    # --- 1. WASH SALE TRACKER ---
+    wash_sale_match = re.search(r'(30-DAY WASH-SALE LOCKOUT TRACKER:\n)(.*?)(?=\n-{50,})', tax_ledger_text, re.DOTALL)
+    if wash_sale_match:
+        tracker_header = wash_sale_match.group(1)
+        tracker_body = wash_sale_match.group(2).strip()
+        
+        active_lockouts = []
+        if tracker_body and "[NO ACTIVE LOCKOUTS]" not in tracker_body.upper():
+            for line in tracker_body.split('\n'):
+                match = re.search(r'-\s+([A-Z]+)\s+\|\s+Date Sold:\s+([\d-]+)\s+\|\s+Lockout Expiry:\s+([\d-]+)', line)
+                if match:
+                    ticker, date_sold, expiry = match.groups()
+                    if datetime.strptime(expiry, "%Y-%m-%d") >= today:
+                        active_lockouts.append(line.strip())
+                        
+        expiry_new = (today + timedelta(days=30)).strftime("%Y-%m-%d")
+        for st in sold_tickers:
+            active_lockouts.append(f"  - {st} | Date Sold: {today_str} | Lockout Expiry: {expiry_new}")
+            
+        new_tracker_body = "\n".join(active_lockouts) if active_lockouts else "  - [NO ACTIVE LOCKOUTS]"
+        new_tracker_block = tracker_header + new_tracker_body + "\n"
+        tax_ledger_text = tax_ledger_text[:wash_sale_match.start()] + new_tracker_block + tax_ledger_text[wash_sale_match.end():]
+
+    # --- 2. REALIZED GAINS MATH ---
+    if not gains_files:
+        return tax_ledger_text
+        
+    stcg_match = re.search(r'Realized Short-Term Capital Gains YTD:\s+([+-]?)\$?([\d,]+\.\d{2})', tax_ledger_text)
+    ltcg_match = re.search(r'Realized Long-Term Capital Gains \(LTCG\) YTD:\s+([+-]?)\$?([\d,]+\.\d{2})', tax_ledger_text)
+    headroom_match = re.search(r'Starting 0% LTCG Headroom:\s+\$?([\d,]+\.\d{2})', tax_ledger_text)
+    
+    current_stcg = float(stcg_match.group(1) + stcg_match.group(2).replace(',', '')) if stcg_match else 0.0
+    current_ltcg = float(ltcg_match.group(1) + ltcg_match.group(2).replace(',', '')) if ltcg_match else 0.0
+    starting_headroom = float(headroom_match.group(1).replace(',', '')) if headroom_match else 49200.0
+    
+    new_stcg, new_ltcg = 0.0, 0.0
+    event_logs = []
+    
+    for gf in gains_files:
+        try:
+            with open(gf, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                
+            summary_idx = next((i for i, line in enumerate(lines) if 'TAXABLE G&L SUMMARY' in line), -1)
+            if summary_idx == -1:
+                print(f"Warning: Could not find TAXABLE G&L SUMMARY in {gf}")
+                continue
+                
+            summary_csv = "\n".join(lines[summary_idx+1:summary_idx+3])
+            df = pd.read_csv(io.StringIO(summary_csv))
+            df.columns = df.columns.str.strip().str.lower()
+            
+            file_stcg, file_ltcg = 0.0, 0.0
+            st_cols = [c for c in df.columns if 'short' in c and 'gain' in c]
+            lt_cols = [c for c in df.columns if 'long' in c and 'gain' in c]
+            
+            if st_cols:
+                file_stcg = pd.to_numeric(df[st_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
+            if lt_cols:
+                file_ltcg = pd.to_numeric(df[lt_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
+                
+            new_stcg += file_stcg
+            new_ltcg += file_ltcg
+            
+            ticker_name = os.path.basename(gf).replace('RealizedGains_', '').replace('.csv', '')
+            log_entry = f"  - {today_str} | Realized Gains Ingestion ({ticker_name})\n"
+            if file_stcg != 0:
+                log_entry += f"    * Net Realized STCG: {'+' if file_stcg >= 0 else ''}${file_stcg:,.2f}\n"
+            if file_ltcg != 0:
+                log_entry += f"    * Net Realized LTCG: {'+' if file_ltcg >= 0 else ''}${file_ltcg:,.2f}\n"
+                
+            if file_stcg != 0 or file_ltcg != 0:
+                event_logs.append(log_entry.rstrip())
+                
+        except Exception as e:
+            print(f"Warning: Could not parse gains from {gf}: {e}")
+            
+    if new_stcg == 0 and new_ltcg == 0:
+        return tax_ledger_text
+        
+    updated_stcg = current_stcg + new_stcg
+    updated_ltcg = current_ltcg + new_ltcg
+    remaining_headroom = starting_headroom - updated_ltcg
+    
+    if event_logs:
+        log_insertion = "\n".join(event_logs) + "\n\nYTD Cumulative Tax Summary:"
+        tax_ledger_text = tax_ledger_text.replace("YTD Cumulative Tax Summary:", log_insertion)
+        
+    def format_currency(val):
+        return f"-${abs(val):,.2f}" if val < 0 else f"+${val:,.2f}" if val > 0 else f"${val:,.2f}"
+        
+    tax_ledger_text = re.sub(r'(Realized Short-Term Capital Gains YTD:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + format_currency(updated_stcg).replace('\\', '\\\\'), tax_ledger_text)
+    tax_ledger_text = re.sub(r'(Realized Long-Term Capital Gains \(LTCG\) YTD:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + format_currency(updated_ltcg).replace('\\', '\\\\'), tax_ledger_text)
+    tax_ledger_text = re.sub(r'(Remaining 0% LTCG Headroom:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${remaining_headroom:,.2f}".replace('\\', '\\\\'), tax_ledger_text)
+    
+    return tax_ledger_text
 
 def load_and_clean_csv(filepath):
     if not os.path.exists(filepath):
@@ -290,7 +409,7 @@ the Core Files and Active Mega-Prompts governing this Gem.
   * Electric_Bill: [Jan: $338.41]
 # [END COPY HERE]
 ================================================================================"""
-    filename = os.path.join(DATA_DIR, f"GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt")
+    filename = os.path.join(DIR_CORE_ACTIVE, f"GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt")
     with open(filename, "w", encoding="utf-8") as f:
         f.write(content)
     print(f"System: Saved {filename}")
@@ -410,7 +529,7 @@ ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
 [{today} | ${combined_capital:,.2f} | ${total_executed_equities:,.2f} | $598,123.68 | $0.00 | {market_status}]
 ================================================================================
 """
-    filename = os.path.join(DATA_DIR, f"GEM_Retirement_Portfolio_Ledger_{today}_v{new_version}.txt")
+    filename = os.path.join(DIR_CORE_ACTIVE, f"GEM_Retirement_Portfolio_Ledger_{today}_v{new_version}.txt")
     with open(filename, "w", encoding="utf-8") as f:
         f.write(content)
     print(f"System: Saved {filename}")
@@ -418,10 +537,87 @@ ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
 def main():
     print("System: Initializing Avenue C Ingestion Engine...")
     try:
-        df_all = load_and_clean_csv(ALL_ACCOUNTS_CSV)
-        df_ira = load_and_clean_csv(IRA_CSV)
+        print("\n" + "=" * 80)
+        print("STEP 1: DATA INGESTION")
+        print("=" * 80)
+        while True:
+            print("Please download fresh CSV files for:")
+            print("1. 'All brokerage and bank accounts' CSV")
+            print("2. 'Traditional IRA -5669' CSV")
+            input(f"Place them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...")
+            try:
+                all_accounts_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_AllAccounts*.csv")
+                ira_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_5669*.csv")
+                print(f"\n✅ Detected: {os.path.basename(all_accounts_csv)}")
+                print(f"✅ Detected: {os.path.basename(ira_csv)}")
+                break
+            except FileNotFoundError:
+                print(f"\n❌ ERROR: I did not detect the required CSV files in the '{DIR_CSV_ACTIVE}' folder.")
+                print("Please make sure the files are in the folder and try again.\n")
+                
+        print("\n" + "-" * 80)
+        print("STEP 2: METADATA OVERRIDES")
+        print("-" * 80)
+        print("If you need to reassign a ticker to a new bucket, please type:")
+        print("Move TICKER to Bucket X")
+        user_input = input("Otherwise, just press ENTER to continue: ").strip()
+        
+        metadata_overrides = {}
+        if user_input:
+            matches = re.findall(r'Move\s+([A-Z]+)\s+to\s+Bucket\s+(\d)', user_input, re.IGNORECASE)
+            for ticker, bucket in matches:
+                metadata_overrides[ticker.upper()] = int(bucket)
+                print(f"Queued override: {ticker.upper()} -> Bucket {bucket}")
+                
+        print("\n" + "-" * 80)
+        print("STEP 3: DELTA CHECK (SOLD / BOUGHT TICKERS)")
+        print("-" * 80)
+        
+        # Extract previous state FIRST to get old tickers
+        prev_state = parse_previous_ledger(DIR_CORE_ACTIVE)
+        old_ledger_path = prev_state['file_path']
+        prev_state['ticker_map'].update(metadata_overrides)
+        
+        df_all = load_and_clean_csv(all_accounts_csv)
+        df_ira = load_and_clean_csv(ira_csv)
         
         taxable, ira = disaggregate_holdings(df_all, df_ira)
+        
+        old_tickers = set(prev_state['ticker_map'].keys())
+        new_tickers = set(taxable.keys()).union(set(ira.keys()))
+        
+        sold_tickers = old_tickers - new_tickers
+        bought_tickers = new_tickers - old_tickers
+        
+        for bt in bought_tickers:
+            if bt not in prev_state['ticker_map']:
+                bucket_input = input(f"\nNew ticker [{bt}] detected. Please reply with its target Bucket (1-8): ").strip()
+                try:
+                    prev_state['ticker_map'][bt] = int(re.search(r'\d', bucket_input).group())
+                except:
+                    print(f"Invalid input. Defaulting {bt} to Bucket 2.")
+                    prev_state['ticker_map'][bt] = 2
+                    
+        gains_files = []
+        if sold_tickers:
+            print(f"\nSale of [{', '.join(sold_tickers)}] detected.")
+            while True:
+                gains_files = glob.glob(os.path.join(DIR_CSV_ACTIVE, "RealizedGains*.csv"))
+                if gains_files:
+                    print("\n✅ Realized Gains CSV(s) detected:")
+                    for gf in gains_files:
+                        print(f"  - {os.path.basename(gf)}")
+                    break
+                else:
+                    print("\n❌ WARNING: Realized Gains CSV(s) NOT FOUND.")
+                    print("Please download your Realized Gains & Losses CSV(s).")
+                    print("Naming convention: Must start with 'RealizedGains' (e.g., RealizedGains_XXXX.csv).")
+                    input(f"Place them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...")
+                    
+        print("\n[DELTA CHECK COMPLETE: No Missing Info.] Proceeding to Data Processing...\n")
+        
+        # Execute Tax Engine
+        prev_state['tax_ledger'] = process_tax_and_wash_sales(prev_state['tax_ledger'], gains_files, sold_tickers)
         
         total_taxable_value = sum(data['Value $'] for data in taxable.values())
         total_ira_value = sum(data['Value $'] for data in ira.values())
@@ -436,13 +632,12 @@ def main():
         
         routing_data = query_strategic_routing(telemetry_payload)
         
-        # Extract previous state
-        prev_state = parse_previous_ledger(DATA_DIR)
-        
         # Dynamically find latest Constants version
-        const_files = glob.glob(os.path.join(DATA_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt"))
+        old_const_path = None
+        const_files = glob.glob(os.path.join(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt"))
         if const_files:
             latest_const = sorted(const_files)[-1]
+            old_const_path = latest_const
             const_match = re.search(r'_v(\d+)\.txt', latest_const)
             const_version = int(const_match.group(1)) if const_match else 0
         else:
@@ -453,7 +648,20 @@ def main():
         generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
         
         print("\n=== PHASE 4 COMPLETE ===")
-        print("Core Files generated successfully in /data/ folder.")
+        print(f"Core Files generated successfully in {DIR_CORE_ACTIVE}.")
+        
+        print("\n=== PHASE 5: CLEAN ROOM ARCHIVING ===")
+        if os.path.exists(old_ledger_path):
+            shutil.move(old_ledger_path, os.path.join(DIR_CORE_ARCHIVE, os.path.basename(old_ledger_path)))
+        if old_const_path and os.path.exists(old_const_path):
+            shutil.move(old_const_path, os.path.join(DIR_CORE_ARCHIVE, os.path.basename(old_const_path)))
+            
+        shutil.move(all_accounts_csv, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(all_accounts_csv)))
+        shutil.move(ira_csv, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(ira_csv)))
+        for gf in gains_files:
+            shutil.move(gf, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(gf)))
+            
+        print("System: Old Core Files and processed CSVs successfully archived.")
             
     except Exception as e:
         print(f"\n[FATAL EXECUTION HALT] {e}")
