@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.0 (Clean Room Architecture & Decoupled Routing)
+#Version: 2.0.1 (Clean Room Architecture + Anti-GIGO Footer Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -247,11 +247,14 @@ def disaggregate_holdings(df_all, df_ira):
                 'Basis $': round(all_data['Value $'] - all_data['Total Gain $'], 2)
             }
             
+    clean_ira_holdings = {}
     for sym, data in ira_holdings.items():
-        if sym.lower() not in ['cash', 'total', 'nan', ''] and 'generated' not in sym.lower() and len(sym) <= 10:
-            ira_holdings[sym]['Basis $'] = round(data['Value $'] - data['Total Gain $'], 2)
+        if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10:
+            continue
+        data['Basis $'] = round(data['Value $'] - data['Total Gain $'], 2)
+        clean_ira_holdings[sym] = data
 
-    return taxable_holdings, ira_holdings
+    return taxable_holdings, clean_ira_holdings
 
 def query_strategic_routing(telemetry_payload):
     print("System: Querying Neuro-Symbolic API for Strategic Routing (Live Web Search Enabled)...")
