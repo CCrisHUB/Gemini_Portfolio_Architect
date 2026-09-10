@@ -1,11 +1,11 @@
-#ingestion_engine.py
+#01_ingestion_engine.py
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.1 (Clean Room Architecture + Anti-GIGO Footer Fix)
+#Version: 2.0.2 (Sequential Prefix Renaming)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.1"
+__version__ = "2.0.2"
 __date__ = "2026-09-10"
 
 import pandas as pd
