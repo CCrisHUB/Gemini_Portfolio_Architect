@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.5 (Direct Regex Cash Extraction & Subtraction Removal)
+#Version: 2.0.6 (3-CSV Architecture & Dynamic Savings Calculation)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.5"
+__version__ = "2.0.6"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -458,19 +458,26 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
 
     total_executed_equities = sum(b['total'] for b in buckets.values())
     
-    # Dynamic Cash from previous state & live CSV
-    op_cash = prev_state['op_cash']
+    # Dynamic Cash from 3-CSV Architecture
     etrade_cds = prev_state['etrade_cds']
     ext_cds = prev_state['ext_cds']
     
-    total_csv_cash = prev_state.get('total_csv_cash', 0.0)
-    if total_csv_cash > 0:
-        uninvested_cash = total_csv_cash
+    uninvested_cash = prev_state.get('brokerage_cash', prev_state['uninvested_cash'])
+    total_platform_cash = prev_state.get('total_platform_cash', 0.0)
+    
+    if total_platform_cash > 0:
+        op_cash = total_platform_cash - uninvested_cash - etrade_cds
     else:
-        uninvested_cash = prev_state['uninvested_cash']
+        op_cash = prev_state['op_cash']
         
     etrade_platform_assets = total_executed_equities + uninvested_cash + op_cash + etrade_cds
     combined_capital = etrade_platform_assets + ext_cds
+
+    # Update Bucket 1 text dynamically
+    b1_text = prev_state['bucket_1']
+    b1_text = re.sub(r'(Operational Cash Buffer.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${op_cash:,.2f}", b1_text)
+    b1_text = re.sub(r'(Subtotal E\*TRADE Bucket 1 Capital.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds):,.2f}", b1_text)
+    b1_text = re.sub(r'(Total Bucket 1 Liquidity.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds + ext_cds):,.2f}", b1_text)
 
     today_dt = datetime.strptime(today, "%Y-%m-%d")
     active_milestones = []
@@ -511,7 +518,7 @@ Annual Target Net Drawdown Gap: $53,249.01
 
 --------------------------------------------------------------------------------
 
-{prev_state['bucket_1']}
+{b1_text}
 
 --------------------------------------------------------------------------------
 """
@@ -563,16 +570,16 @@ def main():
         print("=" * 80)
         while True:
             print("Please download fresh CSV files for:")
-            print("1. 'All brokerage accounts' CSV (Exclude Bank/Savings)")
-            print("2. 'Traditional IRA -5669' CSV")
+            print("1. 'All brokerage and bank accounts' CSV")
+            print("2. 'All brokerage accounts' CSV (Name it: PortfolioDownload_2-8_*.csv)")
+            print("3. 'Traditional IRA -5669' CSV")
             input(f"Place them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...")
             try:
-                all_accounts_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_*.csv")
-                # Ensure we don't accidentally grab the IRA file as the main file
-                if "5669" in all_accounts_csv:
-                    all_accounts_csv = [f for f in glob.glob(os.path.join(DIR_CSV_ACTIVE, "PortfolioDownload_*.csv")) if "5669" not in f][-1]
+                all_accounts_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_AllAccounts*.csv")
+                brokerage_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_2-8*.csv")
                 ira_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_5669*.csv")
                 print(f"\n✅ Detected: {os.path.basename(all_accounts_csv)}")
+                print(f"✅ Detected: {os.path.basename(brokerage_csv)}")
                 print(f"✅ Detected: {os.path.basename(ira_csv)}")
                 break
             except FileNotFoundError:
@@ -602,16 +609,19 @@ def main():
         old_ledger_path = prev_state['file_path']
         prev_state['ticker_map'].update(metadata_overrides)
         
-        df_all = load_and_clean_csv(all_accounts_csv)
+        df_brokerage = load_and_clean_csv(brokerage_csv)
         df_ira = load_and_clean_csv(ira_csv)
         
-        # Extract live CASH row via regex to bypass pandas trailing comma drops
+        # Extract live CASH rows via regex to bypass pandas trailing comma drops
         with open(all_accounts_csv, 'r', encoding='utf-8') as f:
-            raw_csv_text = f.read()
-        cash_match = re.search(r'\nCASH,.*?,([\d\.]+),*\n', raw_csv_text)
-        prev_state['total_csv_cash'] = float(cash_match.group(1)) if cash_match else 0.0
+            all_cash_match = re.search(r'\nCASH,.*?,([\d\.]+),*\n', f.read())
+        prev_state['total_platform_cash'] = float(all_cash_match.group(1)) if all_cash_match else 0.0
         
-        taxable, ira = disaggregate_holdings(df_all, df_ira)
+        with open(brokerage_csv, 'r', encoding='utf-8') as f:
+            brok_cash_match = re.search(r'\nCASH,.*?,([\d\.]+),*\n', f.read())
+        prev_state['brokerage_cash'] = float(brok_cash_match.group(1)) if brok_cash_match else 0.0
+        
+        taxable, ira = disaggregate_holdings(df_brokerage, df_ira)
         
         old_tickers = set(prev_state['ticker_map'].keys())
         new_tickers = set(taxable.keys()).union(set(ira.keys()))
@@ -655,9 +665,9 @@ def main():
         
         telemetry_payload = {
             "total_executed_equities": round(total_executed_equities, 2),
-            "current_savings_balance": 85000.00,
+            "current_savings_balance": prev_state.get('total_platform_cash', 0.0) - prev_state.get('brokerage_cash', 0.0) - prev_state['etrade_cds'],
             "target_savings_balance": 85000.00,
-            "tank_capacity_ratio": 1.0
+            "tank_capacity_ratio": (prev_state.get('total_platform_cash', 0.0) - prev_state.get('brokerage_cash', 0.0) - prev_state['etrade_cds']) / 85000.00
         }
         
         routing_data = query_strategic_routing(telemetry_payload)
@@ -687,6 +697,7 @@ def main():
             shutil.move(old_const_path, os.path.join(DIR_CORE_ARCHIVE, os.path.basename(old_const_path)))
             
         shutil.move(all_accounts_csv, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(all_accounts_csv)))
+        shutil.move(brokerage_csv, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(brokerage_csv)))
         shutil.move(ira_csv, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(ira_csv)))
         for gf in gains_files:
             shutil.move(gf, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(gf)))
