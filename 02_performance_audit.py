@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-11
-#Version: 1.1.2 (Interactive Chat AFC & Versioned UX Patch)
+#Version: 1.1.3 (Macro State Context Injection Patch)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 __date__ = "2026-09-11"
 
 import os
@@ -211,7 +211,7 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
 # ==============================================================================
 # PHASE 4: LLM INTEGRATION & INTERACTIVE CHAT LOOP
 # ==============================================================================
-def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, custom_instructions: str):
+def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, custom_instructions: str, ledger_text: str):
     print(f"\n{ANSI_CYAN}[System] Initializing {LLM_MODEL_NAME} (Thinking Level: High)...{ANSI_RESET}")
     
     chat_session = client.chats.create(
@@ -227,16 +227,19 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
     You are the Retirement and Portfolio Architect. Execute a Fund Performance & Structural Audit.
     
     [DATA PAYLOAD]
-    1. Portfolio Math & Targets (Calculated via Python):
+    1. Macro Portfolio State (Master Ledger):
+    {ledger_text}
+    
+    2. Portfolio Math & Targets (Calculated via Python):
     {portfolio_data}
     
-    2. Active Wash-Sale Lockouts (DO NOT RECOMMEND THESE AS PROXIES):
+    3. Active Wash-Sale Lockouts (DO NOT RECOMMEND THESE AS PROXIES):
     {lockouts}
     
-    3. Live Macro & Search Data (Retrieved via Web Search):
+    4. Live Macro & Search Data (Retrieved via Web Search):
     {search_data}
     
-    4. User Ad-Hoc Inquiry:
+    5. User Ad-Hoc Inquiry:
     "{ad_hoc_query}"
     
     [MANDATE]
@@ -418,7 +421,8 @@ def main():
         search_data=search_data,
         ad_hoc_query=ad_hoc_query,
         lockouts=lockouts,
-        custom_instructions=custom_instructions
+        custom_instructions=custom_instructions,
+        ledger_text=ledger_text
     )
     
     # 7. Finalize & Cleanup
