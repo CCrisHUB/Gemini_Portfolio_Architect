@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.2 (Sequential Prefix Renaming)
+#Version: 2.0.3 (Dynamic Milestone Extraction & 730-Day Culling Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -68,6 +68,9 @@ def parse_previous_ledger(core_dir):
             for t in tickers:
                 dynamic_ticker_map[t] = b_idx
                 
+    milestone_match = re.search(r'ROLLING HISTORICAL MILESTONE LEDGER.*?\n\[Date.*?\]\n(.*?)(?=\n={80})', content, re.DOTALL)
+    milestones = milestone_match.group(1).strip().split('\n') if milestone_match and milestone_match.group(1).strip() else []
+                
     return {
         'tax_ledger': tax_text, 
         'bucket_1': b1_text, 
@@ -76,6 +79,7 @@ def parse_previous_ledger(core_dir):
         'etrade_cds': etrade_cds, 
         'ext_cds': ext_cds,
         'ticker_map': dynamic_ticker_map,
+        'milestones': milestones,
         'ledger_version': ledger_version,
         'file_path': latest_file
     }
@@ -464,6 +468,19 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
     etrade_platform_assets = total_executed_equities + uninvested_cash + op_cash + etrade_cds
     combined_capital = etrade_platform_assets + ext_cds
 
+    today_dt = datetime.strptime(today, "%Y-%m-%d")
+    active_milestones = []
+    for m in prev_state.get('milestones', []):
+        date_match = re.search(r'\[(\d{4}-\d{2}-\d{2})', m)
+        if date_match:
+            m_date = datetime.strptime(date_match.group(1), "%Y-%m-%d")
+            if (today_dt - m_date).days <= 730:
+                active_milestones.append(m)
+
+    new_milestone = f"[{today} | ${combined_capital:,.2f} | ${total_executed_equities:,.2f} | ${(uninvested_cash + op_cash + etrade_cds + ext_cds):,.2f} | $0.00 | {market_status}]"
+    active_milestones.append(new_milestone)
+    milestone_block = "\n".join(active_milestones)
+
     content = f"""================================================================================
 PORTFOLIO ALLOCATION LEDGER & BUCKET STRUCTURE
 Date: {today} (Version {new_version})
@@ -526,10 +543,7 @@ RECONCILED TOTAL SYSTEM CAPITAL (ZERO DOUBLE-COUNTING AUDIT)
 ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
 --------------------------------------------------------------------------------
 [Date | Total Capital | Executed Equities | Cash/CD Bridge | YTD Drawdown | Market Status]
-[2026-08-29 | $1,721,814.88 | $1,136,814.88 | $585,000.00 | $0.00 | NORMAL]
-[2026-08-30 | $1,733,426.88 | $1,136,814.88 | $585,000.00 | $0.00 | NORMAL]
-[2026-09-01 | $1,731,829.88 | $1,133,706.20 | $598,123.68 | $0.00 | NORMAL]
-[{today} | ${combined_capital:,.2f} | ${total_executed_equities:,.2f} | $598,123.68 | $0.00 | {market_status}]
+{milestone_block}
 ================================================================================
 """
     filename = os.path.join(DIR_CORE_ACTIVE, f"GEM_Retirement_Portfolio_Ledger_{today}_v{new_version}.txt")
