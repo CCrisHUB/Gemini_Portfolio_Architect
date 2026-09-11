@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.7 (Pacing Engine State-Loss Patch)
+#Version: 2.0.8 (Tax Ledger Dynamic Injection & Sequencing Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.7"
+__version__ = "2.0.8"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -87,7 +87,7 @@ def parse_previous_ledger(core_dir):
         'file_path': latest_file
     }
 
-def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers):
+def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routing_data):
     today = datetime.now()
     today_str = today.strftime("%Y-%m-%d")
     
@@ -114,66 +114,65 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers):
         new_tracker_block = tracker_header + new_tracker_body + "\n"
         tax_ledger_text = tax_ledger_text[:wash_sale_match.start()] + new_tracker_block + tax_ledger_text[wash_sale_match.end():]
 
-    # --- 2. REALIZED GAINS MATH ---
-    if not gains_files:
-        return tax_ledger_text
-        
+    # --- 2. EXTRACT CURRENT STATE ---
     stcg_match = re.search(r'Realized Short-Term Capital Gains YTD:\s+([+-]?)\$?([\d,]+\.\d{2})', tax_ledger_text)
     ltcg_match = re.search(r'Realized Long-Term Capital Gains \(LTCG\) YTD:\s+([+-]?)\$?([\d,]+\.\d{2})', tax_ledger_text)
-    headroom_match = re.search(r'Starting 0% LTCG Headroom:\s+\$?([\d,]+\.\d{2})', tax_ledger_text)
     
     current_stcg = float(stcg_match.group(1) + stcg_match.group(2).replace(',', '')) if stcg_match else 0.0
     current_ltcg = float(ltcg_match.group(1) + ltcg_match.group(2).replace(',', '')) if ltcg_match else 0.0
-    starting_headroom = float(headroom_match.group(1).replace(',', '')) if headroom_match else 49200.0
     
+    # --- 3. PROCESS NEW GAINS ---
     new_stcg, new_ltcg = 0.0, 0.0
     event_logs = []
     
-    for gf in gains_files:
-        try:
-            with open(gf, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+    if gains_files:
+        for gf in gains_files:
+            try:
+                with open(gf, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    
+                summary_idx = next((i for i, line in enumerate(lines) if 'TAXABLE G&L SUMMARY' in line), -1)
+                if summary_idx == -1:
+                    print(f"Warning: Could not find TAXABLE G&L SUMMARY in {gf}")
+                    continue
+                    
+                summary_csv = "\n".join(lines[summary_idx+1:summary_idx+3])
+                df = pd.read_csv(io.StringIO(summary_csv))
+                df.columns = df.columns.str.strip().str.lower()
                 
-            summary_idx = next((i for i, line in enumerate(lines) if 'TAXABLE G&L SUMMARY' in line), -1)
-            if summary_idx == -1:
-                print(f"Warning: Could not find TAXABLE G&L SUMMARY in {gf}")
-                continue
+                file_stcg, file_ltcg = 0.0, 0.0
+                st_cols = [c for c in df.columns if 'short' in c and 'gain' in c]
+                lt_cols = [c for c in df.columns if 'long' in c and 'gain' in c]
                 
-            summary_csv = "\n".join(lines[summary_idx+1:summary_idx+3])
-            df = pd.read_csv(io.StringIO(summary_csv))
-            df.columns = df.columns.str.strip().str.lower()
+                if st_cols:
+                    file_stcg = pd.to_numeric(df[st_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
+                if lt_cols:
+                    file_ltcg = pd.to_numeric(df[lt_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
+                    
+                new_stcg += file_stcg
+                new_ltcg += file_ltcg
+                
+                ticker_name = os.path.basename(gf).replace('RealizedGains_', '').replace('.csv', '')
+                log_entry = f"  - {today_str} | Realized Gains Ingestion ({ticker_name})\n"
+                if file_stcg != 0:
+                    log_entry += f"    * Net Realized STCG: {'+' if file_stcg >= 0 else ''}${file_stcg:,.2f}\n"
+                if file_ltcg != 0:
+                    log_entry += f"    * Net Realized LTCG: {'+' if file_ltcg >= 0 else ''}${file_ltcg:,.2f}\n"
+                    
+                if file_stcg != 0 or file_ltcg != 0:
+                    event_logs.append(log_entry.rstrip())
+                    
+            except Exception as e:
+                print(f"Warning: Could not parse gains from {gf}: {e}")
             
-            file_stcg, file_ltcg = 0.0, 0.0
-            st_cols = [c for c in df.columns if 'short' in c and 'gain' in c]
-            lt_cols = [c for c in df.columns if 'long' in c and 'gain' in c]
-            
-            if st_cols:
-                file_stcg = pd.to_numeric(df[st_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
-            if lt_cols:
-                file_ltcg = pd.to_numeric(df[lt_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
-                
-            new_stcg += file_stcg
-            new_ltcg += file_ltcg
-            
-            ticker_name = os.path.basename(gf).replace('RealizedGains_', '').replace('.csv', '')
-            log_entry = f"  - {today_str} | Realized Gains Ingestion ({ticker_name})\n"
-            if file_stcg != 0:
-                log_entry += f"    * Net Realized STCG: {'+' if file_stcg >= 0 else ''}${file_stcg:,.2f}\n"
-            if file_ltcg != 0:
-                log_entry += f"    * Net Realized LTCG: {'+' if file_ltcg >= 0 else ''}${file_ltcg:,.2f}\n"
-                
-            if file_stcg != 0 or file_ltcg != 0:
-                event_logs.append(log_entry.rstrip())
-                
-        except Exception as e:
-            print(f"Warning: Could not parse gains from {gf}: {e}")
-            
-    if new_stcg == 0 and new_ltcg == 0:
-        return tax_ledger_text
-        
     updated_stcg = current_stcg + new_stcg
     updated_ltcg = current_ltcg + new_ltcg
-    remaining_headroom = starting_headroom - updated_ltcg
+    
+    # --- 4. DYNAMIC API MATH ---
+    std_ded = routing_data.get('std_deduction', 16100.0)
+    ltcg_limit = routing_data.get('ltcg_limit', 49200.0)
+    max_gross = std_ded + ltcg_limit
+    remaining_headroom = ltcg_limit - updated_ltcg
     
     if event_logs:
         log_insertion = "\n".join(event_logs) + "\n\nYTD Cumulative Tax Summary:"
@@ -182,8 +181,15 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers):
     def format_currency(val):
         return f"-${abs(val):,.2f}" if val < 0 else f"+${val:,.2f}" if val > 0 else f"${val:,.2f}"
         
+    # Update Headers
+    tax_ledger_text = re.sub(r'(0% LTCG Tax Headroom Baseline.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${ltcg_limit:,.2f}", tax_ledger_text)
+    tax_ledger_text = re.sub(r'(Federal Standard Deduction.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${std_ded:,.2f}", tax_ledger_text)
+    tax_ledger_text = re.sub(r'(Maximum Gross Taxable Income.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${max_gross:,.2f}", tax_ledger_text)
+
+    # Update Summary
     tax_ledger_text = re.sub(r'(Realized Short-Term Capital Gains YTD:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + format_currency(updated_stcg).replace('\\', '\\\\'), tax_ledger_text)
     tax_ledger_text = re.sub(r'(Realized Long-Term Capital Gains \(LTCG\) YTD:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + format_currency(updated_ltcg).replace('\\', '\\\\'), tax_ledger_text)
+    tax_ledger_text = re.sub(r'(Starting 0% LTCG Headroom:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${ltcg_limit:,.2f}", tax_ledger_text)
     tax_ledger_text = re.sub(r'(Remaining 0% LTCG Headroom:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${remaining_headroom:,.2f}".replace('\\', '\\\\'), tax_ledger_text)
     
     return tax_ledger_text
@@ -650,9 +656,6 @@ def main():
                     
         print("\n[DELTA CHECK COMPLETE: No Missing Info.] Proceeding to Data Processing...\n")
         
-        # Execute Tax Engine
-        prev_state['tax_ledger'] = process_tax_and_wash_sales(prev_state['tax_ledger'], gains_files, sold_tickers)
-        
         total_taxable_value = sum(data['Value $'] for data in taxable.values())
         total_ira_value = sum(data['Value $'] for data in ira.values())
         total_executed_equities = total_taxable_value + total_ira_value
@@ -665,6 +668,9 @@ def main():
         }
         
         routing_data = query_strategic_routing(telemetry_payload)
+        
+        # Execute Tax Engine (Now with API Truth)
+        prev_state['tax_ledger'] = process_tax_and_wash_sales(prev_state['tax_ledger'], gains_files, sold_tickers, routing_data)
         
         # Dynamically find latest Constants version
         old_const_path = None
