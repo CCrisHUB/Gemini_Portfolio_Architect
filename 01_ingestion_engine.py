@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.3 (Dynamic Milestone Extraction & 730-Day Culling Fix)
+#Version: 2.0.4 (Dynamic CSV Cash Extraction & Subtraction Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -59,7 +59,6 @@ def parse_previous_ledger(core_dir):
     ext_cds = float(re.search(r'External Bank Capital.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'External Bank Capital.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
     
     dynamic_ticker_map = {}
-    # FIX: Added (.*?) capturing group to correctly unpack the tuple (bucket_number, bucket_content)
     bucket_blocks = re.findall(r'\[BUCKET (\d)\](.*?)(?=\n\[BUCKET|\n={80})', content, re.DOTALL)
     for b_num, b_content in bucket_blocks:
         b_idx = int(b_num)
@@ -459,12 +458,17 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
 
     total_executed_equities = sum(b['total'] for b in buckets.values())
     
-    # Dynamic Cash from previous state
-    uninvested_cash = prev_state['uninvested_cash']
+    # Dynamic Cash from previous state & live CSV
     op_cash = prev_state['op_cash']
     etrade_cds = prev_state['etrade_cds']
     ext_cds = prev_state['ext_cds']
     
+    total_csv_cash = prev_state.get('total_csv_cash', 0.0)
+    if total_csv_cash > 0:
+        uninvested_cash = total_csv_cash - op_cash - etrade_cds
+    else:
+        uninvested_cash = prev_state['uninvested_cash']
+        
     etrade_platform_assets = total_executed_equities + uninvested_cash + op_cash + etrade_cds
     combined_capital = etrade_platform_assets + ext_cds
 
@@ -597,6 +601,10 @@ def main():
         
         df_all = load_and_clean_csv(all_accounts_csv)
         df_ira = load_and_clean_csv(ira_csv)
+        
+        # Extract live CASH row before disaggregation drops it
+        cash_match = df_all[df_all['Symbol'].astype(str).str.strip().str.upper() == 'CASH']
+        prev_state['total_csv_cash'] = pd.to_numeric(cash_match['Value $'].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').sum() if not cash_match.empty else 0.0
         
         taxable, ira = disaggregate_holdings(df_all, df_ira)
         
