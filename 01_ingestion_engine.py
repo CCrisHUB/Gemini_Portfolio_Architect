@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-11
-#Version: 2.0.14 (Anti-Drift Disaggregation Patch)
+#Version: 2.0.15 (Master Price Synchronization Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.14"
+__version__ = "2.0.15"
 __date__ = "2026-09-11"
 
 import pandas as pd
@@ -232,6 +232,7 @@ def disaggregate_holdings(df_all, df_ira):
     ira_holdings = df_ira.set_index('Symbol').to_dict('index')
     all_holdings = df_all.set_index('Symbol').to_dict('index')
     taxable_holdings = {}
+    clean_ira_holdings = {}
 
     for symbol, all_data in all_holdings.items():
         # ANTI-GIGO FIX: Drop cash, totals, and E*TRADE timestamp garbage
@@ -240,26 +241,40 @@ def disaggregate_holdings(df_all, df_ira):
             
         if symbol in ira_holdings:
             ira_data = ira_holdings[symbol]
-            taxable_qty = all_data['Quantity'] - ira_data['Quantity']
+            all_qty = all_data['Quantity']
+            ira_qty = ira_data['Quantity']
+            taxable_qty = all_qty - ira_qty
             
+            master_price = all_data['Last Price $']
+            
+            all_basis = all_data['Value $'] - all_data['Total Gain $']
+            ira_basis = ira_data['Value $'] - ira_data['Total Gain $']
+            taxable_basis = all_basis - ira_basis
+            
+            # 1. Sync IRA to Master Price
+            sync_ira_val = ira_qty * master_price
+            sync_ira_gain = sync_ira_val - ira_basis
+            sync_ira_price_paid = ira_basis / ira_qty if ira_qty > 0 else 0.0
+            clean_ira_holdings[symbol] = {
+                'Quantity': round(ira_qty, 4),
+                'Last Price $': master_price,
+                'Value $': round(sync_ira_val, 2),
+                'Price Paid $': round(sync_ira_price_paid, 4),
+                'Total Gain $': round(sync_ira_gain, 2),
+                'Basis $': round(ira_basis, 2)
+            }
+            
+            # 2. Sync Taxable to Master Price
             if taxable_qty > 0.001:
-                # ANTI-DRIFT MATH: Calculate Basis first
-                all_basis = all_data['Value $'] - all_data['Total Gain $']
-                ira_basis = ira_data['Value $'] - ira_data['Total Gain $']
-                taxable_basis = all_basis - ira_basis
-                
-                # Force internal consistency using single price truth
-                taxable_price = all_data['Last Price $']
-                taxable_val = taxable_qty * taxable_price
-                taxable_gain = taxable_val - taxable_basis
-                
-                taxable_price_paid = taxable_basis / taxable_qty if taxable_qty > 0 else 0.0
+                sync_taxable_val = taxable_qty * master_price
+                sync_taxable_gain = sync_taxable_val - taxable_basis
+                sync_taxable_price_paid = taxable_basis / taxable_qty if taxable_qty > 0 else 0.0
                 taxable_holdings[symbol] = {
                     'Quantity': round(taxable_qty, 4),
-                    'Last Price $': taxable_price,
-                    'Value $': round(taxable_val, 2),
-                    'Price Paid $': round(taxable_price_paid, 4),
-                    'Total Gain $': round(taxable_gain, 2),
+                    'Last Price $': master_price,
+                    'Value $': round(sync_taxable_val, 2),
+                    'Price Paid $': round(sync_taxable_price_paid, 4),
+                    'Total Gain $': round(sync_taxable_gain, 2),
                     'Basis $': round(taxable_basis, 2)
                 }
         else:
@@ -272,12 +287,13 @@ def disaggregate_holdings(df_all, df_ira):
                 'Basis $': round(all_data['Value $'] - all_data['Total Gain $'], 2)
             }
             
-    clean_ira_holdings = {}
+    # Safety net for any IRA holdings not caught in the master loop
     for sym, data in ira_holdings.items():
-        if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10:
-            continue
-        data['Basis $'] = round(data['Value $'] - data['Total Gain $'], 2)
-        clean_ira_holdings[sym] = data
+        if sym not in clean_ira_holdings:
+            if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10:
+                continue
+            data['Basis $'] = round(data['Value $'] - data['Total Gain $'], 2)
+            clean_ira_holdings[sym] = data
 
     return taxable_holdings, clean_ira_holdings
 
@@ -567,7 +583,7 @@ RECONCILED TOTAL SYSTEM CAPITAL (ZERO DOUBLE-COUNTING AUDIT)
   - COMBINED TOTAL SYSTEM CAPITAL:                              ${combined_capital:,.2f}
 ================================================================================
 
-ROLLING HISTORICAL MILESTONE Ledger (TRAILING 8 QUARTERS)
+ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
 --------------------------------------------------------------------------------
 [Date | Total Capital | Executed Equities | Cash/CD Bridge | YTD Drawdown | Market Status]
 {milestone_block}
