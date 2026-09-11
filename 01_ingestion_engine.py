@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.10 (Disaggregation Math & Milestone Tracker Patch)
+#Version: 2.0.11 (Realized Gains Anti-GIGO Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.10"
+__version__ = "2.0.11"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -137,8 +137,10 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
                     print(f"Warning: Could not find TAXABLE G&L SUMMARY in {gf}")
                     continue
                     
-                summary_csv = "\n".join(lines[summary_idx+1:summary_idx+3])
-                df = pd.read_csv(io.StringIO(summary_csv))
+                # ANTI-GIGO: Strip trailing commas to prevent pandas ParserError
+                clean_lines = [line.strip().rstrip(',') for line in lines[summary_idx+1:summary_idx+3]]
+                summary_csv = "\n".join(clean_lines)
+                df = pd.read_csv(io.StringIO(summary_csv), on_bad_lines='skip')
                 df.columns = df.columns.str.strip().str.lower()
                 
                 file_stcg, file_ltcg = 0.0, 0.0
