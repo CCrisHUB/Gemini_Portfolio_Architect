@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.12 (Infinite Buy Loop Patch)
+#Version: 2.0.13 (Phase 5 Archive Directory Instantiation Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.12"
+__version__ = "2.0.13"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -701,6 +701,9 @@ def main():
         print(f"Core Files generated successfully in {DIR_CORE_ACTIVE}.")
         
         print("\n=== PHASE 5: CLEAN ROOM ARCHIVING ===")
+        os.makedirs(DIR_CORE_ARCHIVE, exist_ok=True)
+        os.makedirs(DIR_CSV_ARCHIVE, exist_ok=True)
+        
         if os.path.exists(old_ledger_path):
             shutil.move(old_ledger_path, os.path.join(DIR_CORE_ARCHIVE, os.path.basename(old_ledger_path)))
         if old_const_path and os.path.exists(old_const_path):
