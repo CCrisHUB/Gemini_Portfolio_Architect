@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-11
-#Version: 1.1.1 (Global Client & AFC Web Search Patch)
+#Version: 1.1.2 (Interactive Chat AFC & Versioned UX Patch)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 __date__ = "2026-09-11"
 
 import os
@@ -78,6 +78,19 @@ def cleanup_csv_files():
             
         shutil.move(file_path, dest_path)
     print(f"{ANSI_GREEN}[System] Successfully moved {len(csv_files)} CSV file(s) to {CSV_OLD_DIR}.{ANSI_RESET}")
+
+def get_next_version_number(directory: str, base_filename: str) -> int:
+    """Scans the REPORTS directory to find the next version number."""
+    files = os.listdir(directory)
+    max_version = 0
+    pattern = re.compile(rf"{base_filename}_v(\d+)\.txt")
+    for file in files:
+        match = pattern.match(file)
+        if match:
+            version = int(match.group(1))
+            if version > max_version:
+                max_version = version
+    return max_version + 1
 
 # ==============================================================================
 # PHASE 1: DATA INGESTION & RECONCILIATION ENGINE
@@ -205,7 +218,8 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
         model=LLM_MODEL_NAME,
         config=types.GenerateContentConfig(
             temperature=0.1,
-            system_instruction=custom_instructions
+            system_instruction=custom_instructions,
+            tools=[{"google_search": {}}]
         )
     )
     
@@ -242,7 +256,9 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
         sys.exit(1)
         
     date_str = datetime.now().strftime("%Y-%m-%d")
-    proposal_filename = f"Fund_Performance_and_Structural_Audit_{date_str}_PROPOSAL.txt"
+    base_proposal_name = f"Fund_Performance_and_Structural_Audit_{date_str}_PROPOSAL"
+    next_prop_version = get_next_version_number(REPORTS_DIR, base_proposal_name)
+    proposal_filename = f"{base_proposal_name}_v{next_prop_version}.txt"
     proposal_filepath = os.path.join(REPORTS_DIR, proposal_filename)
     
     with open(proposal_filepath, "w", encoding="utf-8") as f:
@@ -266,7 +282,14 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
         print(f"{ANSI_CYAN}[System] Sending to {LLM_MODEL_NAME}...{ANSI_RESET}")
         try:
             reply = chat_session.send_message(user_input)
-            print(f"\n{ANSI_GREEN}[AI]:\n{reply.text}{ANSI_RESET}")
+            next_prop_version = get_next_version_number(REPORTS_DIR, base_proposal_name)
+            followup_filename = f"{base_proposal_name}_v{next_prop_version}.txt"
+            followup_filepath = os.path.join(REPORTS_DIR, followup_filename)
+            
+            with open(followup_filepath, "w", encoding="utf-8") as f:
+                f.write(reply.text)
+                
+            print(f"\n{ANSI_GREEN}[System] Response saved to: {followup_filepath}{ANSI_RESET}")
         except Exception as e:
             print(f"{ANSI_RED}[ERROR] Communication failed: {e}{ANSI_RESET}")
 
@@ -275,19 +298,6 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
 # ==============================================================================
 # PHASE 5: FINAL MARKDOWN RENDERING & FILE GENERATION
 # ==============================================================================
-def get_next_version_number(directory: str, base_filename: str) -> int:
-    """Scans the REPORTS directory to find the next version number."""
-    files = os.listdir(directory)
-    max_version = 0
-    pattern = re.compile(rf"{base_filename}_v(\d+)\.txt")
-    for file in files:
-        match = pattern.match(file)
-        if match:
-            version = int(match.group(1))
-            if version > max_version:
-                max_version = version
-    return max_version + 1
-
 def finalize_audit(chat_session):
     print(f"\n{ANSI_CYAN}[System] Compiling final agreed-upon state...{ANSI_RESET}")
     date_str = datetime.now().strftime("%Y-%m-%d")
