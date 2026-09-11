@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.8 (Tax Ledger Dynamic Injection & Sequencing Patch)
+#Version: 2.0.9 (Bucket 6 Quarantine & Robust Cash Regex Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.8"
+__version__ = "2.0.9"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -65,7 +65,8 @@ def parse_previous_ledger(core_dir):
     bucket_blocks = re.findall(r'\[BUCKET (\d)\](.*?)(?=\n\[BUCKET|\n={80})', content, re.DOTALL)
     for b_num, b_content in bucket_blocks:
         b_idx = int(b_num)
-        if b_idx >= 2:
+        # ANTI-CONTAMINATION: Quarantine Bucket 6 (IRA)
+        if b_idx >= 2 and b_idx != 6:
             tickers = re.findall(r'\*\s+([A-Z]+)\s+:', b_content)
             for t in tickers:
                 dynamic_ticker_map[t] = b_idx
@@ -614,12 +615,12 @@ def main():
         
         # Extract live CASH rows via regex to bypass pandas trailing comma drops
         with open(all_accounts_csv, 'r', encoding='utf-8') as f:
-            all_cash_match = re.search(r'\nCASH,.*?,([\d\.]+),*\n', f.read())
-        prev_state['total_platform_cash'] = float(all_cash_match.group(1)) if all_cash_match else 0.0
+            all_cash_match = re.search(r'\nCASH,.*?,([-\d\.,]+)', f.read())
+        prev_state['total_platform_cash'] = float(all_cash_match.group(1).replace(',', '')) if all_cash_match else 0.0
         
         with open(brokerage_csv, 'r', encoding='utf-8') as f:
-            brok_cash_match = re.search(r'\nCASH,.*?,([\d\.]+),*\n', f.read())
-        prev_state['brokerage_cash'] = float(brok_cash_match.group(1)) if brok_cash_match else 0.0
+            brok_cash_match = re.search(r'\nCASH,.*?,([-\d\.,]+)', f.read())
+        prev_state['brokerage_cash'] = float(brok_cash_match.group(1).replace(',', '')) if brok_cash_match else 0.0
         
         taxable, ira = disaggregate_holdings(df_brokerage, df_ira)
         
