@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-11
-#Version: 1.0.3 (Modern SDK & Dotenv Patch)
+#Version: 1.1.0 (ALU Module Integration & UX Enhancements)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.0.3"
+__version__ = "1.1.0"
 __date__ = "2026-09-11"
 
 import os
@@ -13,12 +13,11 @@ import sys
 import glob
 import re
 import shutil
-import io
-import pandas as pd
 from datetime import datetime
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+import alu_utils
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -100,104 +99,26 @@ def extract_wash_sale_lockouts(ledger_text: str) -> dict:
             print(f"{ANSI_YELLOW}[WARNING] Failed to parse wash-sale lockouts: {e}{ANSI_RESET}")
     return lockouts
 
-def load_and_clean_csv(filepath: str) -> pd.DataFrame:
-    """Robust E*TRADE CSV parser that bypasses preambles."""
-    print(f"{ANSI_CYAN}[System] Parsing {os.path.basename(filepath)}...{ANSI_RESET}")
-    with open(filepath, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    header_index = -1
-    for i, line in enumerate(lines):
-        if line.strip().startswith("Symbol"):
-            header_index = i
-            break
-    if header_index == -1:
-        raise ValueError(f"FATAL: Could not find the main data table header in {filepath}.")
-    clean_csv_string = "".join(lines[header_index:])
-    df = pd.read_csv(io.StringIO(clean_csv_string), on_bad_lines='skip')
-    df.columns = df.columns.str.strip()
-    return df
-
-def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Standardizes columns, strips currency strings, and removes garbage rows."""
-    df.rename(columns={
-        'Qty': 'Quantity', 
-        'Value ($)': 'Value', 'Value $': 'Value', 
-        'Price ($)': 'Price', 'Last Price $': 'Price',
-        'Cost Basis ($)': 'Cost_Basis', 'Cost Basis': 'Cost_Basis'
-    }, inplace=True, errors='ignore')
-    
-    df.dropna(subset=['Symbol'], inplace=True)
-    df['Symbol'] = df['Symbol'].astype(str).str.strip()
-    
-    for col in ['Quantity', 'Value', 'Price', 'Cost_Basis', 'Total Gain $']:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0)
-            
-    # Calculate total Cost_Basis if missing but Total Gain is present
-    if 'Cost_Basis' not in df.columns and 'Total Gain $' in df.columns:
-        df['Cost_Basis'] = df['Value'] - df['Total Gain $']
-        
-    df = df[~df['Symbol'].str.lower().isin(['cash', 'total', 'nan', ''])]
-    df = df[~df['Symbol'].str.lower().str.contains('generated')]
-    df = df[df['Symbol'].str.len() <= 10]
-    return df
-
-def process_csvs(consolidated_path: str, ira_path: str) -> pd.DataFrame:
-    df_all = sanitize_dataframe(load_and_clean_csv(consolidated_path))
-    df_ira = sanitize_dataframe(load_and_clean_csv(ira_path))
-
-    ira_grouped = df_ira.groupby('Symbol').agg({'Quantity': 'sum', 'Value': 'sum', 'Cost_Basis': 'sum'}).reset_index()
-    ira_grouped['Account_Type'] = 'IRA_5669'
-
-    all_grouped = df_all.groupby('Symbol').agg({'Quantity': 'sum', 'Value': 'sum', 'Cost_Basis': 'sum', 'Price': 'first'}).reset_index()
-
-    merged = pd.merge(all_grouped, ira_grouped[['Symbol', 'Quantity', 'Value', 'Cost_Basis']], on='Symbol', how='left', suffixes=('_Total', '_IRA'))
-    
-    for col in ['Quantity_IRA', 'Value_IRA', 'Cost_Basis_IRA']:
-        merged[col] = merged[col].fillna(0)
-
-    merged['Quantity_Taxable'] = merged['Quantity_Total'] - merged['Quantity_IRA']
-    merged['Value_Taxable'] = merged['Value_Total'] - merged['Value_IRA']
-    merged['Cost_Basis_Taxable'] = merged['Cost_Basis_Total'] - merged['Cost_Basis_IRA']
-
-    final_rows = []
-    for _, row in merged.iterrows():
-        if row['Quantity_IRA'] > 0:
-            final_rows.append({
-                'Symbol': row['Symbol'], 'Quantity': row['Quantity_IRA'], 'Value': row['Value_IRA'],
-                'Cost_Basis': row['Cost_Basis_IRA'], 'Price': row['Price'],
-                'Account_Type': 'IRA_5669', 'Tax_Status': 'EXEMPT'
-            })
-        if row['Quantity_Taxable'] > 0:
-            final_rows.append({
-                'Symbol': row['Symbol'], 'Quantity': row['Quantity_Taxable'], 'Value': row['Value_Taxable'],
-                'Cost_Basis': row['Cost_Basis_Taxable'], 'Price': row['Price'],
-                'Account_Type': 'TAXABLE', 'Tax_Status': 'HARVESTABLE'
-            })
-
-    return pd.DataFrame(final_rows)
-
 # ==============================================================================
 # PHASE 2: TRIAGE & MATERIALITY LOGIC
 # ==============================================================================
-def identify_audit_targets(df_portfolio: pd.DataFrame) -> list:
+def identify_audit_targets(taxable_holdings: dict) -> list:
     targets = []
-    taxable_df = df_portfolio[df_portfolio['Tax_Status'] == 'HARVESTABLE'].copy()
-    
-    taxable_df['Unrealized_GL_Value'] = taxable_df['Value'] - taxable_df['Cost_Basis']
-    taxable_df['Unrealized_GL_Pct'] = taxable_df['Unrealized_GL_Value'] / taxable_df['Cost_Basis']
-    
-    for _, row in taxable_df.iterrows():
-        ticker = row['Symbol']
-        gl_value = row['Unrealized_GL_Value']
-        gl_pct = row['Unrealized_GL_Pct']
+    for ticker, data in taxable_holdings.items():
+        gl_value = data['Total Gain $']
+        basis = data['Basis $']
+        value = data['Value $']
+        
+        # Prevent division by zero
+        gl_pct = gl_value / basis if basis > 0 else 0.0
         
         is_target, reason = False, ""
         
         if ticker in YIELD_TRAPS:
             is_target, reason = True, "STRUCTURAL YIELD TRAP"
         elif gl_value < 0:
-            abs_loss, abs_loss_pct = abs(gl_value), abs(gl_pct)
+            abs_loss = abs(gl_value)
+            abs_loss_pct = abs(gl_pct)
             if abs_loss > 1000.00:
                 is_target, reason = True, f"MATERIAL LOSS (>${abs_loss:,.2f})"
             elif abs_loss_pct > 0.05:
@@ -205,8 +126,8 @@ def identify_audit_targets(df_portfolio: pd.DataFrame) -> list:
                 
         if is_target:
             targets.append({
-                'Symbol': ticker, 'Account_Type': row['Account_Type'], 'Cost_Basis': row['Cost_Basis'],
-                'Value': row['Value'], 'Unrealized_GL': gl_value, 'Unrealized_GL_Pct': gl_pct, 'Reason': reason
+                'Symbol': ticker, 'Account_Type': 'TAXABLE', 'Cost_Basis': basis,
+                'Value': value, 'Unrealized_GL': gl_value, 'Unrealized_GL_Pct': gl_pct, 'Reason': reason
             })
 
     targets_sorted = sorted(targets, key=lambda x: x['Unrealized_GL'])
@@ -334,12 +255,12 @@ def generate_and_review_proposal(portfolio_data: str, search_data: str, ad_hoc_q
     print("="*60 + f"{ANSI_RESET}")
     print("Please open the file in VS Code to review the AI's recommendations.")
     print("You can now ask follow-up questions, challenge the proxies, or ask for clarification.")
-    print("Type 'accept' when you are satisfied to generate the final official file.")
+    print("Type 'accept', 'finalize', 'done', or 'exit' when you are satisfied to generate the final official file.")
     
     while True:
         user_input = input(f"\n{ANSI_CYAN}[You]: {ANSI_RESET}").strip()
-        if user_input.lower() == 'accept':
-            print(f"\n{ANSI_CYAN}[System] Proposal accepted. Finalizing audit...{ANSI_RESET}")
+        if user_input.lower() in ['accept', 'finalize', 'done', 'exit']:
+            print(f"\n{ANSI_CYAN}[System] Session finalized. Generating official report...{ANSI_RESET}")
             break
         if not user_input:
             continue
@@ -379,8 +300,8 @@ def finalize_audit(chat_session):
     final_filepath = os.path.join(REPORTS_DIR, final_filename)
     
     final_prompt = f"""
-    The user has accepted the audit. 
-    Generate the FINAL, official report incorporating all agreed-upon changes.
+    The user has finalized the session. 
+    Generate the FINAL, official report incorporating all agreed-upon changes and advisory conclusions.
     
     MANDATORY FORMATTING RULES:
     1. Output strictly formatted with soft word-boundary wrapping (max 80 columns).
@@ -444,16 +365,19 @@ def main():
             if user_input.lower() == 'exit': sys.exit(0)
 
     # 2. Locate CSV Files
+    print(f"\n{ANSI_CYAN}[System] Checking for required CSV files...{ANSI_RESET}")
+    print("Note: This audit only requires the Brokerage (2-8) and IRA (5669) CSVs.")
+    print("You DO NOT need to download the 'AllAccounts' or 'RealizedGains' CSVs for this module.")
     while True:
         try:
-            consolidated_csv = get_latest_file(CSV_CURRENT_DIR, "PortfolioDownload_AllAccounts*.csv")
+            brokerage_csv = get_latest_file(CSV_CURRENT_DIR, "PortfolioDownload_2-8*.csv")
             ira_csv = get_latest_file(CSV_CURRENT_DIR, "PortfolioDownload_5669*.csv")
-            print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(consolidated_csv)}{ANSI_RESET}")
+            print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(brokerage_csv)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ira_csv)}{ANSI_RESET}")
             break
         except FileNotFoundError:
-            print(f"\n{ANSI_RED}❌ ERROR: I did not detect the required CSV files in the '{CSV_CURRENT_DIR}' folder.{ANSI_RESET}")
-            print(f"{ANSI_YELLOW}Please ensure both 'AllAccounts' and '5669' CSVs are present.{ANSI_RESET}")
+            print(f"\n{ANSI_RED}❌ ERROR: Missing required CSV files in '{CSV_CURRENT_DIR}'.{ANSI_RESET}")
+            print(f"{ANSI_YELLOW}Please ensure both '2-8' (Brokerage) and '5669' (IRA) CSVs are present.{ANSI_RESET}")
             user_input = input(f"{ANSI_CYAN}Place them in the folder and press ENTER to retry (or type 'exit'): {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
 
@@ -461,9 +385,12 @@ def main():
     ledger_text = load_file_content(ledger_file)
     lockouts = extract_wash_sale_lockouts(ledger_text)
     
-    # 4. Process CSVs & Triage
-    df_portfolio = process_csvs(consolidated_csv, ira_csv)
-    targets = identify_audit_targets(df_portfolio)
+    # 4. Process CSVs & Triage via ALU Module
+    df_brok = alu_utils.load_and_clean_csv(brokerage_csv)
+    df_ira = alu_utils.load_and_clean_csv(ira_csv)
+    taxable_holdings, _ = alu_utils.disaggregate_holdings(df_brok, df_ira)
+    
+    targets = identify_audit_targets(taxable_holdings)
     print_triage_summary(targets)
     
     # 5. Pre-Flight & Search
