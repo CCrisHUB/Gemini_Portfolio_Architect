@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.4 (Dynamic CSV Cash Extraction & Subtraction Fix)
+#Version: 2.0.5 (Direct Regex Cash Extraction & Subtraction Removal)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.4"
+__version__ = "2.0.5"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -465,7 +465,7 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
     
     total_csv_cash = prev_state.get('total_csv_cash', 0.0)
     if total_csv_cash > 0:
-        uninvested_cash = total_csv_cash - op_cash - etrade_cds
+        uninvested_cash = total_csv_cash
     else:
         uninvested_cash = prev_state['uninvested_cash']
         
@@ -563,11 +563,14 @@ def main():
         print("=" * 80)
         while True:
             print("Please download fresh CSV files for:")
-            print("1. 'All brokerage and bank accounts' CSV")
+            print("1. 'All brokerage accounts' CSV (Exclude Bank/Savings)")
             print("2. 'Traditional IRA -5669' CSV")
             input(f"Place them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...")
             try:
-                all_accounts_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_AllAccounts*.csv")
+                all_accounts_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_*.csv")
+                # Ensure we don't accidentally grab the IRA file as the main file
+                if "5669" in all_accounts_csv:
+                    all_accounts_csv = [f for f in glob.glob(os.path.join(DIR_CSV_ACTIVE, "PortfolioDownload_*.csv")) if "5669" not in f][-1]
                 ira_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_5669*.csv")
                 print(f"\n✅ Detected: {os.path.basename(all_accounts_csv)}")
                 print(f"✅ Detected: {os.path.basename(ira_csv)}")
@@ -602,9 +605,11 @@ def main():
         df_all = load_and_clean_csv(all_accounts_csv)
         df_ira = load_and_clean_csv(ira_csv)
         
-        # Extract live CASH row before disaggregation drops it
-        cash_match = df_all[df_all['Symbol'].astype(str).str.strip().str.upper() == 'CASH']
-        prev_state['total_csv_cash'] = pd.to_numeric(cash_match['Value $'].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').sum() if not cash_match.empty else 0.0
+        # Extract live CASH row via regex to bypass pandas trailing comma drops
+        with open(all_accounts_csv, 'r', encoding='utf-8') as f:
+            raw_csv_text = f.read()
+        cash_match = re.search(r'\nCASH,.*?,([\d\.]+),*\n', raw_csv_text)
+        prev_state['total_csv_cash'] = float(cash_match.group(1)) if cash_match else 0.0
         
         taxable, ira = disaggregate_holdings(df_all, df_ira)
         
