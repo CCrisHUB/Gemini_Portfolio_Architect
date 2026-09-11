@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-11
-#Version: 1.1.0 (ALU Module Integration & UX Enhancements)
+#Version: 1.1.1 (Global Client & AFC Web Search Patch)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 __date__ = "2026-09-11"
 
 import os
@@ -161,10 +161,9 @@ def get_ad_hoc_inquiry() -> str:
         print(f"\n{ANSI_CYAN}[System] No ad-hoc inquiry. Proceeding with standard audit...{ANSI_RESET}")
     return user_input
 
-def gather_live_macro_data(targets: list, ad_hoc_query: str) -> str:
+def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
     print(f"{ANSI_CYAN}[System] Initiating Live Web Search via Gemini API...{ANSI_RESET}")
     
-    client = genai.Client()
     target_tickers = [t['Symbol'] for t in targets]
     
     search_prompt = f"""
@@ -182,13 +181,14 @@ def gather_live_macro_data(targets: list, ad_hoc_query: str) -> str:
     Output this data as a clean, structured text summary. DO NOT provide advice yet.
     """
     try:
-        response = client.models.generate_content(
+        search_chat = client.chats.create(
             model=LLM_MODEL_NAME,
-            contents=search_prompt,
             config=types.GenerateContentConfig(
-                tools=[{"google_search": {}}]
+                tools=[{"google_search": {}}],
+                temperature=0.1
             )
         )
+        response = search_chat.send_message(search_prompt)
         print(f"{ANSI_GREEN}[System] Live Macro Data successfully retrieved.{ANSI_RESET}")
         return response.text
     except Exception as e:
@@ -198,10 +198,8 @@ def gather_live_macro_data(targets: list, ad_hoc_query: str) -> str:
 # ==============================================================================
 # PHASE 4: LLM INTEGRATION & INTERACTIVE CHAT LOOP
 # ==============================================================================
-def generate_and_review_proposal(portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, custom_instructions: str):
+def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, custom_instructions: str):
     print(f"\n{ANSI_CYAN}[System] Initializing {LLM_MODEL_NAME} (Thinking Level: High)...{ANSI_RESET}")
-    
-    client = genai.Client()
     
     chat_session = client.chats.create(
         model=LLM_MODEL_NAME,
@@ -350,6 +348,9 @@ def main():
         print(f"{ANSI_YELLOW}Please ensure your .env file is present and contains GEMINI_API_KEY=your_key{ANSI_RESET}")
         sys.exit(1)
 
+    # Instantiate the API client globally to prevent garbage collection closure
+    client = genai.Client()
+
     # 1. Locate Core Files
     while True:
         try:
@@ -395,13 +396,14 @@ def main():
     
     # 5. Pre-Flight & Search
     ad_hoc_query = get_ad_hoc_inquiry()
-    search_data = gather_live_macro_data(targets, ad_hoc_query) if (targets or ad_hoc_query) else "No search required."
+    search_data = gather_live_macro_data(client, targets, ad_hoc_query) if (targets or ad_hoc_query) else "No search required."
     
     # 6. LLM Integration
     custom_instructions = load_file_content(instructions_file)
     portfolio_data_str = "\n".join([str(t) for t in targets]) if targets else "No harvestable targets identified."
     
     chat_session = generate_and_review_proposal(
+        client=client,
         portfolio_data=portfolio_data_str,
         search_data=search_data,
         ad_hoc_query=ad_hoc_query,
