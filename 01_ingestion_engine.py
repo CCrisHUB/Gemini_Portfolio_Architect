@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.6 (3-CSV Architecture & Dynamic Savings Calculation)
+#Version: 2.0.7 (Pacing Engine State-Loss Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.6"
+__version__ = "2.0.7"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -50,6 +50,9 @@ def parse_previous_ledger(core_dir):
     tax_match = re.search(r'(PERSISTENT YTD TAX LEDGER.*?)(?=\n-{50,}\n+DATE-AWARE SPENDING PACING ENGINE)', content, re.DOTALL)
     tax_text = tax_match.group(1).strip() if tax_match else "PERSISTENT YTD TAX LEDGER\n[DATA NOT FOUND]"
     
+    pacing_match = re.search(r'(DATE-AWARE SPENDING PACING ENGINE.*?)(?=\n-{50,}\n+\[BUCKET 1\])', content, re.DOTALL)
+    pacing_text = pacing_match.group(1).strip() if pacing_match else "DATE-AWARE SPENDING PACING ENGINE\n[DATA NOT FOUND]"
+    
     b1_match = re.search(r'(\[BUCKET 1\] LIQUIDITY & PRESERVATION.*?)(?=\n-{50,}\n+\[BUCKET 2\])', content, re.DOTALL)
     b1_text = b1_match.group(1).strip() if b1_match else "[BUCKET 1] LIQUIDITY & PRESERVATION\n[DATA NOT FOUND]"
     
@@ -72,6 +75,7 @@ def parse_previous_ledger(core_dir):
                 
     return {
         'tax_ledger': tax_text, 
+        'pacing_engine': pacing_text,
         'bucket_1': b1_text, 
         'uninvested_cash': uninvested, 
         'op_cash': op_cash, 
@@ -504,17 +508,7 @@ Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...5669)
 
 --------------------------------------------------------------------------------
 
-DATE-AWARE SPENDING PACING ENGINE & LIABILITY FORECAST
---------------------------------------------------------------------------------
-Current Date: {today}
-Annual Target Net Drawdown Gap: $53,249.01
-
-  - Total A (Paced YTD Target):                   $35,596.60
-  - Total B (Actual YTD Drawdown):                     $0.00
-  - Pacing Variance (Gross):                     -$35,596.60 (Under paced target)
-  
-  - Pending Fixed Liabilities (YTD Remaining):    $8,522.00
-  - Net Adjusted Pacing Variance:                +$27,074.60
+{prev_state.get('pacing_engine', 'DATE-AWARE SPENDING PACING ENGINE\\n[DATA NOT FOUND]')}
 
 --------------------------------------------------------------------------------
 
