@@ -1,12 +1,12 @@
 #01_ingestion_engine.py
 #"""
 #Avenue C Ingestion Engine
-#Date: 2026-09-10
-#Version: 2.0.13 (Phase 5 Archive Directory Instantiation Patch)
+#Date: 2026-09-11
+#Version: 2.0.14 (Anti-Drift Disaggregation Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.13"
-__date__ = "2026-09-10"
+__version__ = "2.0.14"
+__date__ = "2026-09-11"
 
 import pandas as pd
 import os
@@ -241,15 +241,22 @@ def disaggregate_holdings(df_all, df_ira):
         if symbol in ira_holdings:
             ira_data = ira_holdings[symbol]
             taxable_qty = all_data['Quantity'] - ira_data['Quantity']
-            taxable_val = all_data['Value $'] - ira_data['Value $']
-            taxable_gain = all_data['Total Gain $'] - ira_data['Total Gain $']
             
             if taxable_qty > 0.001:
-                taxable_basis = taxable_val - taxable_gain
+                # ANTI-DRIFT MATH: Calculate Basis first
+                all_basis = all_data['Value $'] - all_data['Total Gain $']
+                ira_basis = ira_data['Value $'] - ira_data['Total Gain $']
+                taxable_basis = all_basis - ira_basis
+                
+                # Force internal consistency using single price truth
+                taxable_price = all_data['Last Price $']
+                taxable_val = taxable_qty * taxable_price
+                taxable_gain = taxable_val - taxable_basis
+                
                 taxable_price_paid = taxable_basis / taxable_qty if taxable_qty > 0 else 0.0
                 taxable_holdings[symbol] = {
                     'Quantity': round(taxable_qty, 4),
-                    'Last Price $': all_data['Last Price $'],
+                    'Last Price $': taxable_price,
                     'Value $': round(taxable_val, 2),
                     'Price Paid $': round(taxable_price_paid, 4),
                     'Total Gain $': round(taxable_gain, 2),
@@ -560,7 +567,7 @@ RECONCILED TOTAL SYSTEM CAPITAL (ZERO DOUBLE-COUNTING AUDIT)
   - COMBINED TOTAL SYSTEM CAPITAL:                              ${combined_capital:,.2f}
 ================================================================================
 
-ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
+ROLLING HISTORICAL MILESTONE Ledger (TRAILING 8 QUARTERS)
 --------------------------------------------------------------------------------
 [Date | Total Capital | Executed Equities | Cash/CD Bridge | YTD Drawdown | Market Status]
 {milestone_block}
