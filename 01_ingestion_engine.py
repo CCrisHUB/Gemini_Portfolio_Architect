@@ -2,15 +2,13 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-11
-#Version: 2.0.15 (Master Price Synchronization Patch)
+#Version: 2.2.0 (ALU Module Integration)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.15"
+__version__ = "2.2.0"
 __date__ = "2026-09-11"
 
-import pandas as pd
 import os
-import io
 import json
 import re
 import glob
@@ -19,6 +17,7 @@ from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+import alu_utils
 
 # Define decoupled directory paths
 DIR_CORE_ACTIVE = "00_CORE_Files"
@@ -140,6 +139,8 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
                 # ANTI-GIGO: Strip trailing commas to prevent pandas ParserError
                 clean_lines = [line.strip().rstrip(',') for line in lines[summary_idx+1:summary_idx+3]]
                 summary_csv = "\n".join(clean_lines)
+                import pandas as pd
+                import io
                 df = pd.read_csv(io.StringIO(summary_csv), on_bad_lines='skip')
                 df.columns = df.columns.str.strip().str.lower()
                 
@@ -196,106 +197,6 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
     tax_ledger_text = re.sub(r'(Remaining 0% LTCG Headroom:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${remaining_headroom:,.2f}".replace('\\', '\\\\'), tax_ledger_text)
     
     return tax_ledger_text
-
-def load_and_clean_csv(filepath):
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"FATAL: Missing required file: {filepath}")
-    print(f"System: Parsing {os.path.basename(filepath)}...")
-    with open(filepath, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    header_index = -1
-    for i, line in enumerate(lines):
-        if line.strip().startswith("Symbol,Last Price $"):
-            header_index = i
-            break
-    if header_index == -1:
-        raise ValueError(f"FATAL: Could not find the main data table header in {filepath}.")
-    clean_csv_string = "".join(lines[header_index:])
-    df = pd.read_csv(io.StringIO(clean_csv_string), on_bad_lines='skip')
-    df.columns = df.columns.str.strip()
-    return df
-
-def disaggregate_holdings(df_all, df_ira):
-    print("System: Executing deterministic disaggregation...")
-    required_cols = ['Symbol', 'Quantity', 'Last Price $', 'Value $', 'Price Paid $', 'Total Gain $']
-    for col in required_cols:
-        if col not in df_all.columns or col not in df_ira.columns:
-            raise ValueError(f"FATAL: Missing required column '{col}' in CSVs.")
-
-    df_all['Symbol'] = df_all['Symbol'].astype(str).str.strip()
-    df_ira['Symbol'] = df_ira['Symbol'].astype(str).str.strip()
-
-    for col in ['Quantity', 'Last Price $', 'Value $', 'Price Paid $', 'Total Gain $']:
-        df_all[col] = pd.to_numeric(df_all[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0)
-        df_ira[col] = pd.to_numeric(df_ira[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0)
-
-    ira_holdings = df_ira.set_index('Symbol').to_dict('index')
-    all_holdings = df_all.set_index('Symbol').to_dict('index')
-    taxable_holdings = {}
-    clean_ira_holdings = {}
-
-    for symbol, all_data in all_holdings.items():
-        # ANTI-GIGO FIX: Drop cash, totals, and E*TRADE timestamp garbage
-        if symbol.lower() in ['cash', 'total', 'nan', ''] or 'generated' in symbol.lower() or len(symbol) > 10:
-            continue
-            
-        if symbol in ira_holdings:
-            ira_data = ira_holdings[symbol]
-            all_qty = all_data['Quantity']
-            ira_qty = ira_data['Quantity']
-            taxable_qty = all_qty - ira_qty
-            
-            master_price = all_data['Last Price $']
-            
-            all_basis = all_data['Value $'] - all_data['Total Gain $']
-            ira_basis = ira_data['Value $'] - ira_data['Total Gain $']
-            taxable_basis = all_basis - ira_basis
-            
-            # 1. Sync IRA to Master Price
-            sync_ira_val = ira_qty * master_price
-            sync_ira_gain = sync_ira_val - ira_basis
-            sync_ira_price_paid = ira_basis / ira_qty if ira_qty > 0 else 0.0
-            clean_ira_holdings[symbol] = {
-                'Quantity': round(ira_qty, 4),
-                'Last Price $': master_price,
-                'Value $': round(sync_ira_val, 2),
-                'Price Paid $': round(sync_ira_price_paid, 4),
-                'Total Gain $': round(sync_ira_gain, 2),
-                'Basis $': round(ira_basis, 2)
-            }
-            
-            # 2. Sync Taxable to Master Price
-            if taxable_qty > 0.001:
-                sync_taxable_val = taxable_qty * master_price
-                sync_taxable_gain = sync_taxable_val - taxable_basis
-                sync_taxable_price_paid = taxable_basis / taxable_qty if taxable_qty > 0 else 0.0
-                taxable_holdings[symbol] = {
-                    'Quantity': round(taxable_qty, 4),
-                    'Last Price $': master_price,
-                    'Value $': round(sync_taxable_val, 2),
-                    'Price Paid $': round(sync_taxable_price_paid, 4),
-                    'Total Gain $': round(sync_taxable_gain, 2),
-                    'Basis $': round(taxable_basis, 2)
-                }
-        else:
-            taxable_holdings[symbol] = {
-                'Quantity': all_data['Quantity'],
-                'Last Price $': all_data['Last Price $'],
-                'Value $': all_data['Value $'],
-                'Price Paid $': all_data['Price Paid $'],
-                'Total Gain $': all_data['Total Gain $'],
-                'Basis $': round(all_data['Value $'] - all_data['Total Gain $'], 2)
-            }
-            
-    # Safety net for any IRA holdings not caught in the master loop
-    for sym, data in ira_holdings.items():
-        if sym not in clean_ira_holdings:
-            if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10:
-                continue
-            data['Basis $'] = round(data['Value $'] - data['Total Gain $'], 2)
-            clean_ira_holdings[sym] = data
-
-    return taxable_holdings, clean_ira_holdings
 
 def query_strategic_routing(telemetry_payload):
     print("System: Querying Neuro-Symbolic API for Strategic Routing (Live Web Search Enabled)...")
@@ -641,8 +542,8 @@ def main():
         old_ledger_path = prev_state['file_path']
         prev_state['ticker_map'].update(metadata_overrides)
         
-        df_brokerage = load_and_clean_csv(brokerage_csv)
-        df_ira = load_and_clean_csv(ira_csv)
+        df_brokerage = alu_utils.load_and_clean_csv(brokerage_csv)
+        df_ira = alu_utils.load_and_clean_csv(ira_csv)
         
         # Extract live CASH rows via regex to bypass pandas trailing comma drops
         with open(all_accounts_csv, 'r', encoding='utf-8') as f:
@@ -653,7 +554,7 @@ def main():
             brok_cash_match = re.search(r'\nCASH,.*?,([-\d\.,]+)', f.read())
         prev_state['brokerage_cash'] = float(brok_cash_match.group(1).replace(',', '')) if brok_cash_match else 0.0
         
-        taxable, ira = disaggregate_holdings(df_brokerage, df_ira)
+        taxable, ira = alu_utils.disaggregate_holdings(df_brokerage, df_ira)
         
         old_tickers = set(prev_state['ticker_map'].keys())
         # ANTI-LOOP: Only track delta for taxable assets to prevent IRA false-positives

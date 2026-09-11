@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-11
-#Version: 1.0.0 (Initial Avenue C Port)
+#Version: 1.0.3 (Modern SDK & Dotenv Patch)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.0.0"
+__version__ = "1.0.3"
 __date__ = "2026-09-11"
 
 import os
@@ -13,9 +13,12 @@ import sys
 import glob
 import re
 import shutil
+import io
 import pandas as pd
 from datetime import datetime
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+from dotenv import load_dotenv
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -47,12 +50,12 @@ for directory in [CORE_DIR, OLD_CORE_DIR, CSV_CURRENT_DIR, CSV_OLD_DIR, REPORTS_
 # ==============================================================================
 # HELPER FUNCTIONS (FILE I/O)
 # ==============================================================================
-def find_latest_file(directory: str, pattern: str) -> str:
+def get_latest_file(directory: str, pattern: str) -> str:
     """Finds the latest file in a specific directory matching a glob pattern."""
     search_path = os.path.join(directory, pattern)
     files = glob.glob(search_path)
     if not files:
-        return None
+        raise FileNotFoundError(f"No files found matching pattern: {pattern} in {directory}")
     files.sort(key=os.path.getmtime, reverse=True)
     return files[0]
 
@@ -97,18 +100,51 @@ def extract_wash_sale_lockouts(ledger_text: str) -> dict:
             print(f"{ANSI_YELLOW}[WARNING] Failed to parse wash-sale lockouts: {e}{ANSI_RESET}")
     return lockouts
 
-def process_csvs(consolidated_path: str, ira_path: str) -> pd.DataFrame:
-    try:
-        df_all = pd.read_csv(consolidated_path, on_bad_lines='skip')
-        df_ira = pd.read_csv(ira_path, on_bad_lines='skip')
-    except FileNotFoundError as e:
-        print(f"{ANSI_RED}[FATAL ERROR] Missing required CSV file: {e}{ANSI_RESET}")
-        sys.exit(1)
+def load_and_clean_csv(filepath: str) -> pd.DataFrame:
+    """Robust E*TRADE CSV parser that bypasses preambles."""
+    print(f"{ANSI_CYAN}[System] Parsing {os.path.basename(filepath)}...{ANSI_RESET}")
+    with open(filepath, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    header_index = -1
+    for i, line in enumerate(lines):
+        if line.strip().startswith("Symbol"):
+            header_index = i
+            break
+    if header_index == -1:
+        raise ValueError(f"FATAL: Could not find the main data table header in {filepath}.")
+    clean_csv_string = "".join(lines[header_index:])
+    df = pd.read_csv(io.StringIO(clean_csv_string), on_bad_lines='skip')
+    df.columns = df.columns.str.strip()
+    return df
 
-    for df in [df_all, df_ira]:
-        df.rename(columns={'Qty': 'Quantity', 'Value ($)': 'Value', 'Price ($)': 'Price', 'Cost Basis ($)': 'Cost_Basis', 'Cost Basis': 'Cost_Basis'}, inplace=True, errors='ignore')
-        df.dropna(subset=['Symbol'], inplace=True)
-        df = df[~df['Symbol'].isin(['CASH', 'TOTAL'])]
+def sanitize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardizes columns, strips currency strings, and removes garbage rows."""
+    df.rename(columns={
+        'Qty': 'Quantity', 
+        'Value ($)': 'Value', 'Value $': 'Value', 
+        'Price ($)': 'Price', 'Last Price $': 'Price',
+        'Cost Basis ($)': 'Cost_Basis', 'Cost Basis': 'Cost_Basis'
+    }, inplace=True, errors='ignore')
+    
+    df.dropna(subset=['Symbol'], inplace=True)
+    df['Symbol'] = df['Symbol'].astype(str).str.strip()
+    
+    for col in ['Quantity', 'Value', 'Price', 'Cost_Basis', 'Total Gain $']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0)
+            
+    # Calculate total Cost_Basis if missing but Total Gain is present
+    if 'Cost_Basis' not in df.columns and 'Total Gain $' in df.columns:
+        df['Cost_Basis'] = df['Value'] - df['Total Gain $']
+        
+    df = df[~df['Symbol'].str.lower().isin(['cash', 'total', 'nan', ''])]
+    df = df[~df['Symbol'].str.lower().str.contains('generated')]
+    df = df[df['Symbol'].str.len() <= 10]
+    return df
+
+def process_csvs(consolidated_path: str, ira_path: str) -> pd.DataFrame:
+    df_all = sanitize_dataframe(load_and_clean_csv(consolidated_path))
+    df_ira = sanitize_dataframe(load_and_clean_csv(ira_path))
 
     ira_grouped = df_ira.groupby('Symbol').agg({'Quantity': 'sum', 'Value': 'sum', 'Cost_Basis': 'sum'}).reset_index()
     ira_grouped['Account_Type'] = 'IRA_5669'
@@ -207,7 +243,7 @@ def get_ad_hoc_inquiry() -> str:
 def gather_live_macro_data(targets: list, ad_hoc_query: str) -> str:
     print(f"{ANSI_CYAN}[System] Initiating Live Web Search via Gemini API...{ANSI_RESET}")
     
-    model = genai.GenerativeModel(model_name=LLM_MODEL_NAME, tools='google_search_retrieval')
+    client = genai.Client()
     target_tickers = [t['Symbol'] for t in targets]
     
     search_prompt = f"""
@@ -225,7 +261,13 @@ def gather_live_macro_data(targets: list, ad_hoc_query: str) -> str:
     Output this data as a clean, structured text summary. DO NOT provide advice yet.
     """
     try:
-        response = model.generate_content(search_prompt)
+        response = client.models.generate_content(
+            model=LLM_MODEL_NAME,
+            contents=search_prompt,
+            config=types.GenerateContentConfig(
+                tools=[{"google_search": {}}]
+            )
+        )
         print(f"{ANSI_GREEN}[System] Live Macro Data successfully retrieved.{ANSI_RESET}")
         return response.text
     except Exception as e:
@@ -238,14 +280,15 @@ def gather_live_macro_data(targets: list, ad_hoc_query: str) -> str:
 def generate_and_review_proposal(portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, custom_instructions: str):
     print(f"\n{ANSI_CYAN}[System] Initializing {LLM_MODEL_NAME} (Thinking Level: High)...{ANSI_RESET}")
     
-    generation_config = genai.types.GenerationConfig(temperature=0.1)
-    model = genai.GenerativeModel(
-        model_name=LLM_MODEL_NAME,
-        generation_config=generation_config,
-        system_instruction=custom_instructions
-    )
+    client = genai.Client()
     
-    chat_session = model.start_chat(history=[])
+    chat_session = client.chats.create(
+        model=LLM_MODEL_NAME,
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            system_instruction=custom_instructions
+        )
+    )
     
     initial_prompt = f"""
     You are the Retirement and Portfolio Architect. Execute a Fund Performance & Structural Audit.
@@ -379,53 +422,55 @@ def main():
     print(" AVENUE C: FUND PERFORMANCE & STRUCTURAL AUDIT ENGINE")
     print("="*60 + f"{ANSI_RESET}")
     
-    # 0. API Key Check
+    # 0. API Key Check & Dotenv Load
+    load_dotenv()
     if not os.environ.get("GEMINI_API_KEY"):
         print(f"{ANSI_RED}[FATAL ERROR] GEMINI_API_KEY environment variable not found.{ANSI_RESET}")
+        print(f"{ANSI_YELLOW}Please ensure your .env file is present and contains GEMINI_API_KEY=your_key{ANSI_RESET}")
         sys.exit(1)
-    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 
-    # 1. Locate Files (Looking in the specific directories)
-    ledger_file = find_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
-    instructions_file = find_latest_file(CORE_DIR, "GEM_Retirement_and_Portfolio_Architect_Custom_Instructions_*.txt")
-    
-    if not ledger_file:
-        print(f"{ANSI_RED}[FATAL ERROR] Could not find Portfolio Ledger in {CORE_DIR}{ANSI_RESET}")
-        sys.exit(1)
-        
-    # CSVs are expected in the CSV_CURRENT_DIR
-    consolidated_csv = os.path.join(CSV_CURRENT_DIR, "PortfolioDownload_AllAccounts.csv")
-    ira_csv = os.path.join(CSV_CURRENT_DIR, "PortfolioDownload_5669.csv")
-    
-    # Input loop for graceful degradation if files are missing
-    while not os.path.exists(consolidated_csv):
-        print(f"{ANSI_YELLOW}[WARNING] Consolidated CSV not found at: {consolidated_csv}{ANSI_RESET}")
-        user_path = input(f"{ANSI_CYAN}Enter full path for Consolidated CSV (or type 'exit'): {ANSI_RESET}").strip()
-        if user_path.lower() == 'exit':
-            sys.exit(0)
-        consolidated_csv = user_path
+    # 1. Locate Core Files
+    while True:
+        try:
+            ledger_file = get_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
+            instructions_file = get_latest_file(CORE_DIR, "GEM_Retirement_and_Portfolio_Architect_Custom_Instructions_*.txt")
+            print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ledger_file)}{ANSI_RESET}")
+            print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(instructions_file)}{ANSI_RESET}")
+            break
+        except FileNotFoundError:
+            print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{CORE_DIR}'.{ANSI_RESET}")
+            print(f"{ANSI_YELLOW}Please ensure both the Portfolio Ledger and Custom Instructions are present.{ANSI_RESET}")
+            user_input = input(f"{ANSI_CYAN}Press ENTER to retry, or type 'exit' to quit: {ANSI_RESET}").strip()
+            if user_input.lower() == 'exit': sys.exit(0)
 
-    while not os.path.exists(ira_csv):
-        print(f"{ANSI_YELLOW}[WARNING] IRA CSV not found at: {ira_csv}{ANSI_RESET}")
-        user_path = input(f"{ANSI_CYAN}Enter full path for IRA CSV (or type 'exit'): {ANSI_RESET}").strip()
-        if user_path.lower() == 'exit':
-            sys.exit(0)
-        ira_csv = user_path
+    # 2. Locate CSV Files
+    while True:
+        try:
+            consolidated_csv = get_latest_file(CSV_CURRENT_DIR, "PortfolioDownload_AllAccounts*.csv")
+            ira_csv = get_latest_file(CSV_CURRENT_DIR, "PortfolioDownload_5669*.csv")
+            print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(consolidated_csv)}{ANSI_RESET}")
+            print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ira_csv)}{ANSI_RESET}")
+            break
+        except FileNotFoundError:
+            print(f"\n{ANSI_RED}❌ ERROR: I did not detect the required CSV files in the '{CSV_CURRENT_DIR}' folder.{ANSI_RESET}")
+            print(f"{ANSI_YELLOW}Please ensure both 'AllAccounts' and '5669' CSVs are present.{ANSI_RESET}")
+            user_input = input(f"{ANSI_CYAN}Place them in the folder and press ENTER to retry (or type 'exit'): {ANSI_RESET}").strip()
+            if user_input.lower() == 'exit': sys.exit(0)
 
-    # 2. Extract Lockouts
+    # 3. Extract Lockouts
     ledger_text = load_file_content(ledger_file)
     lockouts = extract_wash_sale_lockouts(ledger_text)
     
-    # 3. Process CSVs & Triage
+    # 4. Process CSVs & Triage
     df_portfolio = process_csvs(consolidated_csv, ira_csv)
     targets = identify_audit_targets(df_portfolio)
     print_triage_summary(targets)
     
-    # 4. Pre-Flight & Search
+    # 5. Pre-Flight & Search
     ad_hoc_query = get_ad_hoc_inquiry()
     search_data = gather_live_macro_data(targets, ad_hoc_query) if (targets or ad_hoc_query) else "No search required."
     
-    # 5. LLM Integration
+    # 6. LLM Integration
     custom_instructions = load_file_content(instructions_file)
     portfolio_data_str = "\n".join([str(t) for t in targets]) if targets else "No harvestable targets identified."
     
@@ -437,7 +482,7 @@ def main():
         custom_instructions=custom_instructions
     )
     
-    # 6. Finalize & Cleanup
+    # 7. Finalize & Cleanup
     finalize_audit(chat_session)
     cleanup_csv_files()
 
