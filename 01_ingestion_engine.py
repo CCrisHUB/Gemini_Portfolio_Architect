@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.11 (Realized Gains Anti-GIGO Patch)
+#Version: 2.0.12 (Infinite Buy Loop Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.11"
+__version__ = "2.0.12"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -633,7 +633,8 @@ def main():
         taxable, ira = disaggregate_holdings(df_brokerage, df_ira)
         
         old_tickers = set(prev_state['ticker_map'].keys())
-        new_tickers = set(taxable.keys()).union(set(ira.keys()))
+        # ANTI-LOOP: Only track delta for taxable assets to prevent IRA false-positives
+        new_tickers = set(taxable.keys())
         
         sold_tickers = old_tickers - new_tickers
         bought_tickers = new_tickers - old_tickers
