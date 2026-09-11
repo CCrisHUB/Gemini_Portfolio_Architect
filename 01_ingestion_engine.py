@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-10
-#Version: 2.0.9 (Bucket 6 Quarantine & Robust Cash Regex Patch)
+#Version: 2.0.10 (Disaggregation Math & Milestone Tracker Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.0.9"
+__version__ = "2.0.10"
 __date__ = "2026-09-10"
 
 import pandas as pd
@@ -243,13 +243,15 @@ def disaggregate_holdings(df_all, df_ira):
             taxable_gain = all_data['Total Gain $'] - ira_data['Total Gain $']
             
             if taxable_qty > 0.001:
+                taxable_basis = taxable_val - taxable_gain
+                taxable_price_paid = taxable_basis / taxable_qty if taxable_qty > 0 else 0.0
                 taxable_holdings[symbol] = {
                     'Quantity': round(taxable_qty, 4),
                     'Last Price $': all_data['Last Price $'],
                     'Value $': round(taxable_val, 2),
-                    'Price Paid $': all_data['Price Paid $'],
+                    'Price Paid $': round(taxable_price_paid, 4),
                     'Total Gain $': round(taxable_gain, 2),
-                    'Basis $': round(taxable_val - taxable_gain, 2)
+                    'Basis $': round(taxable_basis, 2)
                 }
         else:
             taxable_holdings[symbol] = {
@@ -499,7 +501,11 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
             if (today_dt - m_date).days <= 730:
                 active_milestones.append(m)
 
-    new_milestone = f"[{today} | ${combined_capital:,.2f} | ${total_executed_equities:,.2f} | ${(uninvested_cash + op_cash + etrade_cds + ext_cds):,.2f} | $0.00 | {market_status}]"
+    # Extract live YTD Drawdown from Pacing Engine
+    ytd_match = re.search(r'Total B \(Actual YTD Drawdown\):\s+\$?([\d,]+\.\d{2})', prev_state.get('pacing_engine', ''))
+    ytd_drawdown = float(ytd_match.group(1).replace(',', '')) if ytd_match else 0.0
+
+    new_milestone = f"[{today} | ${combined_capital:,.2f} | ${total_executed_equities:,.2f} | ${(uninvested_cash + op_cash + etrade_cds + ext_cds):,.2f} | ${ytd_drawdown:,.2f} | {market_status}]"
     active_milestones.append(new_milestone)
     milestone_block = "\n".join(active_milestones)
 
