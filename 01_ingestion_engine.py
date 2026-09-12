@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.3.2 (Pacing Engine Polarity Fix)
+#Version: 2.3.3 (Seasonal Bill Regex Patch)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.2"
+__version__ = "2.3.3"
 __date__ = "2026-09-12"
 
 import os
@@ -220,7 +220,7 @@ def calculate_pending_liabilities(const_text):
         if int(month_str) >= current_month:
             liabilities += float(val_str.replace(',', ''))
     month_map = {'Jan':1, 'Feb':2, 'Mar':3, 'Apr':4, 'May':5, 'Jun':6, 'Jul':7, 'Aug':8, 'Sep':9, 'Oct':10, 'Nov':11, 'Dec':12}
-    seasonal_items = re.findall(r'\[([A-Z][a-z]{2}):\s*\$([\d,]+\.\d{2})\]', payload)
+    seasonal_items = re.findall(r'([A-Z][a-z]{2}):\s*\$([\d,]+\.\d{2})', payload)
     for m_str, val_str in seasonal_items:
         if month_map.get(m_str, 0) >= current_month:
             liabilities += float(val_str.replace(',', ''))
