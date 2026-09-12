@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.3.3 (Seasonal Bill Regex Patch)
+#Version: 2.3.4 (Cosmetic Alignment Enforcement)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.3"
+__version__ = "2.3.4"
 __date__ = "2026-09-12"
 
 import os
@@ -347,6 +347,10 @@ def generate_master_constants(old_const_text, routing_data, current_version, new
         content = content.replace('CONST_OPERATIONAL_CASH_BUFFER', f'CONST_BROKERAGE_LITTLE_CASH: ${cash_engine["LITTLE_CASH"]:,.2f} (Floating Brokerage Cash)\n   - CONST_OPERATIONAL_CASH_BUFFER')
     else:
         content = re.sub(r'(CONST_BROKERAGE_LITTLE_CASH:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${cash_engine['LITTLE_CASH']:,.2f}", content)
+        
+    # Enforce cosmetic alignment (add missing hyphens)
+    content = re.sub(r'\n\s*CONST_BROKERAGE_LITTLE_CASH', r'\n   - CONST_BROKERAGE_LITTLE_CASH', content)
+    content = re.sub(r'\n\s*CONST_OPERATIONAL_CASH_BUFFER', r'\n   - CONST_OPERATIONAL_CASH_BUFFER', content)
         
     # Fix Section 3 plain-text sync
     content = re.sub(r'(Operational Cash Buffer:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${cash_engine['SAVINGS']:,.2f}", content)
