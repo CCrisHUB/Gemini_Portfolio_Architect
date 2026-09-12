@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-12
-#Version: 1.7.0 (Deterministic Proxies & Terminal UX Rendering)
+#Version: 1.8.0 (Data Provenance & Epistemological Guardrails)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.7.0"
+__version__ = "1.8.0"
 __date__ = "2026-09-12"
 
 import os
@@ -223,6 +223,10 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
     
     search_prompt = f"""
     You are a financial data retrieval engine. You have access to Google Search.
+    
+    [DATA PROVENANCE MANDATE]
+    RESTRICT ALL SEARCHES to Tier-1 financial institutions (e.g., Morningstar, Bloomberg, Reuters, Federal Reserve, WSJ). EXCLUDE all social media, Reddit, and opinion blogs (e.g., Motley Fool, Seeking Alpha).
+    
     Search for and return the LIVE current data for the following:
     
     1. Macro-Economic Climate:
@@ -235,7 +239,7 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
        - If specific tickers are mentioned, search for their Expense Ratio, Yield, and 1-year return.
        - If deploying cash is mentioned, search for current macro conditions (e.g., S&P 500 30-day trend).
        
-    Output this data as a clean, structured text summary. DO NOT provide advice yet.
+    Output this data as a clean, structured text summary. For EVERY data point, you MUST append a citation: [Source: Website Name]. DO NOT provide advice yet.
     """
     try:
         search_chat = client.chats.create(
@@ -376,6 +380,9 @@ def finalize_audit(chat_session):
     
     ## 3. AD-HOC INQUIRY RESOLUTION
     (Answers to the user's specific questions).
+    
+    ## 4. DATA PROVENANCE & CITATIONS
+    (A consolidated list of all Tier-1 sources and institutions used to generate this report).
     
     MANDATORY FORMATTING RULES:
     1. Output strictly formatted with soft word-boundary wrapping (max 80 columns).
