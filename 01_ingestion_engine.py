@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.2.7 (Graceful Degradation & ANSI UX)
+#Version: 2.3.0 (Dynamic CD Manager & Cash Math Overhaul)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.7"
+__version__ = "2.3.0"
 __date__ = "2026-09-12"
 
 import os
@@ -44,7 +44,6 @@ def parse_previous_ledger(core_dir):
     
     latest_file = sorted(files)[-1]
     
-    # Dynamically extract the ledger version from the filename
     version_match = re.search(r'_v(\d+)\.txt', latest_file)
     ledger_version = int(version_match.group(1)) if version_match else 0
     
@@ -60,16 +59,26 @@ def parse_previous_ledger(core_dir):
     b1_match = re.search(r'(\[BUCKET 1\] LIQUIDITY & PRESERVATION.*?)(?=\n-{50,}\n+\[BUCKET 2\])', content, re.DOTALL)
     b1_text = b1_match.group(1).strip() if b1_match else "[BUCKET 1] LIQUIDITY & PRESERVATION\n[DATA NOT FOUND]"
     
-    uninvested = extract_currency(r'Uninvested Brokerage Cash', content)
-    op_cash = extract_currency(r'Operational Cash Buffer', content)
-    etrade_cds = extract_currency(r'E\*TRADE CD Ladder', content)
-    ext_cds = extract_currency(r'External Bank Capital', content)
+    # Dynamic State Extraction (Removing Hardcoded Fallbacks)
+    ira_acct_match = re.search(r'\[BUCKET 6\].*?Account:\s+\.\.\.(\d{4})', content, re.DOTALL)
+    ira_acct = ira_acct_match.group(1) if ira_acct_match else "5669"
+    
+    std_ded_fallback = extract_currency(r'Federal Standard Deduction', content)
+    if std_ded_fallback == 0.0: std_ded_fallback = 16100.0
+    
+    ltcg_fallback = extract_currency(r'0% LTCG Tax Headroom Baseline', content)
+    if ltcg_fallback == 0.0: ltcg_fallback = 49450.0
+    
+    # Parse CDs dynamically into a list of dicts
+    cd_list = []
+    cd_matches = re.findall(r'\*\s+(CD Bucket #\d+.*?):\s+\$([\d,]+\.\d{2})\s+\[(.*?)\]', b1_text)
+    for name, val, loc in cd_matches:
+        cd_list.append({'name': name, 'value': float(val.replace(',', '')), 'loc': loc})
     
     dynamic_ticker_map = {}
     bucket_blocks = re.findall(r'\[BUCKET (\d)\](.*?)(?=\n\[BUCKET|\n={80})', content, re.DOTALL)
     for b_num, b_content in bucket_blocks:
         b_idx = int(b_num)
-        # ANTI-CONTAMINATION: Quarantine Bucket 6 (IRA)
         if b_idx >= 2 and b_idx != 6:
             tickers = re.findall(r'\*\s+([A-Z]+)\s+:', b_content)
             for t in tickers:
@@ -81,22 +90,20 @@ def parse_previous_ledger(core_dir):
     return {
         'tax_ledger': tax_text, 
         'pacing_engine': pacing_text,
-        'bucket_1': b1_text, 
-        'uninvested_cash': uninvested, 
-        'op_cash': op_cash, 
-        'etrade_cds': etrade_cds, 
-        'ext_cds': ext_cds,
+        'cd_list': cd_list,
+        'ira_acct': ira_acct,
+        'std_ded_fallback': std_ded_fallback,
+        'ltcg_fallback': ltcg_fallback,
         'ticker_map': dynamic_ticker_map,
         'milestones': milestones,
         'ledger_version': ledger_version,
         'file_path': latest_file
     }
 
-def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routing_data):
+def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routing_data, prev_state):
     today = datetime.now()
     today_str = today.strftime("%Y-%m-%d")
     
-    # --- 1. WASH SALE TRACKER ---
     wash_sale_match = re.search(r'(30-DAY WASH-SALE LOCKOUT TRACKER:\n)(.*?)(?=\n-{50,})', tax_ledger_text, re.DOTALL)
     if wash_sale_match:
         tracker_header = wash_sale_match.group(1)
@@ -119,14 +126,12 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
         new_tracker_block = tracker_header + new_tracker_body + "\n"
         tax_ledger_text = tax_ledger_text[:wash_sale_match.start()] + new_tracker_block + tax_ledger_text[wash_sale_match.end():]
 
-    # --- 2. EXTRACT CURRENT STATE ---
     stcg_match = re.search(r'Realized Short-Term Capital Gains YTD:\s+([+-]?)\$?([\d,]+\.\d{2})', tax_ledger_text)
     ltcg_match = re.search(r'Realized Long-Term Capital Gains \(LTCG\) YTD:\s+([+-]?)\$?([\d,]+\.\d{2})', tax_ledger_text)
     
     current_stcg = float(stcg_match.group(1) + stcg_match.group(2).replace(',', '')) if stcg_match else 0.0
     current_ltcg = float(ltcg_match.group(1) + ltcg_match.group(2).replace(',', '')) if ltcg_match else 0.0
     
-    # --- 3. PROCESS NEW GAINS ---
     new_stcg, new_ltcg = 0.0, 0.0
     event_logs = []
     
@@ -138,10 +143,8 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
                     
                 summary_idx = next((i for i, line in enumerate(lines) if 'TAXABLE G&L SUMMARY' in line), -1)
                 if summary_idx == -1:
-                    print(f"Warning: Could not find TAXABLE G&L SUMMARY in {gf}")
                     continue
                     
-                # ANTI-GIGO: Strip trailing commas to prevent pandas ParserError
                 clean_lines = [line.strip().rstrip(',') for line in lines[summary_idx+1:summary_idx+3]]
                 summary_csv = "\n".join(clean_lines)
                 import pandas as pd
@@ -177,9 +180,9 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
     updated_stcg = current_stcg + new_stcg
     updated_ltcg = current_ltcg + new_ltcg
     
-    # --- 4. DYNAMIC API MATH ---
-    std_ded = routing_data.get('std_deduction', 16100.0)
-    ltcg_limit = routing_data.get('ltcg_limit', 49200.0)
+    # Dynamic API Math with Fallbacks
+    std_ded = routing_data.get('std_deduction', prev_state['std_ded_fallback'])
+    ltcg_limit = routing_data.get('ltcg_limit', prev_state['ltcg_fallback'])
     max_gross = std_ded + ltcg_limit
     remaining_headroom = ltcg_limit - updated_ltcg
     
@@ -190,12 +193,10 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
     def format_currency(val):
         return f"-${abs(val):,.2f}" if val < 0 else f"+${val:,.2f}" if val > 0 else f"${val:,.2f}"
         
-    # Update Headers
     tax_ledger_text = re.sub(r'(0% LTCG Tax Headroom Baseline.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${ltcg_limit:,.2f}", tax_ledger_text)
     tax_ledger_text = re.sub(r'(Federal Standard Deduction.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${std_ded:,.2f}", tax_ledger_text)
     tax_ledger_text = re.sub(r'(Maximum Gross Taxable Income.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${max_gross:,.2f}", tax_ledger_text)
 
-    # Update Summary
     tax_ledger_text = re.sub(r'(Realized Short-Term Capital Gains YTD:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + format_currency(updated_stcg).replace('\\', '\\\\'), tax_ledger_text)
     tax_ledger_text = re.sub(r'(Realized Long-Term Capital Gains \(LTCG\) YTD:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + format_currency(updated_ltcg).replace('\\', '\\\\'), tax_ledger_text)
     tax_ledger_text = re.sub(r'(Starting 0% LTCG Headroom:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${ltcg_limit:,.2f}", tax_ledger_text)
@@ -300,7 +301,6 @@ def query_strategic_routing(telemetry_payload):
         if not response.text:
             raise ValueError("API returned an empty text response.")
             
-        # Bulletproof JSON extraction (ignores citations/markdown)
         raw_text = response.text.strip()
         start_idx = raw_text.find('{')
         end_idx = raw_text.rfind('}') + 1
@@ -312,38 +312,41 @@ def query_strategic_routing(telemetry_payload):
             raise ValueError(f"Failed to extract JSON from API response: {raw_text}")
             
     except Exception as e:
-        raise RuntimeError(f"API Boundary Failure: {e}")
+        print(f"\033[91m[API WARNING] {e}. Falling back to extracted state variables.\033[0m")
+        return {}
 
-def generate_master_constants(old_const_text, routing_data, current_version, new_ledger_version, combined_capital):
+def generate_master_constants(old_const_text, routing_data, current_version, new_ledger_version, cash_engine, prev_state):
     print("System: Generating Core File 1 (Master Constants)...")
     new_version = current_version + 1
     today = datetime.now().strftime("%Y-%m-%d")
     
     cpi = routing_data.get('cpi_rate', 3.36)
-    std_ded = routing_data.get('std_deduction', 16100.0)
-    ltcg = routing_data.get('ltcg_limit', 49200.0)
+    std_ded = routing_data.get('std_deduction', prev_state['std_ded_fallback'])
+    ltcg = routing_data.get('ltcg_limit', prev_state['ltcg_fallback'])
     max_gross = std_ded + ltcg
     
     content = old_const_text
     
-    # Update Header Date and Version
     content = re.sub(r'Date: \d{4}-\d{2}-\d{2} \(Version \d+\)', f'Date: {today} (Version {new_version})', content)
     content = re.sub(r'File Name: GEM_Retirement_Master_Profile_Constants_\d{4}-\d{2}-\d{2}_v\d+\.txt', f'File Name: GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt', content)
     
-    # Update Manifest
     content = re.sub(r'GEM_Retirement_Master_Profile_Constants_\d{4}-\d{2}-\d{2}_v\d+\.txt', f'GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt', content)
     content = re.sub(r'GEM_Retirement_Portfolio_Ledger_\d{4}-\d{2}-\d{2}_v\d+\.txt', f'GEM_Retirement_Portfolio_Ledger_{today}_v{new_ledger_version}.txt', content)
     
-    # Update Tax Parameters
     content = re.sub(r'(CONST_ACTIVE_STD_DEDUCTION:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${std_ded:,.2f}", content)
     content = re.sub(r'(CONST_ACTIVE_0PCT_LTCG_LIMIT:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${ltcg:,.2f}", content)
     content = re.sub(r'(CONST_ACTIVE_MAX_GROSS_0PCT_LTCG:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${max_gross:,.2f}", content)
-    
-    # Update CPI
     content = re.sub(r'(Dynamic CPI Factor\s+:\s+)[\d\.]+%', r'\g<1>' + f"{cpi}%", content)
     
-    # Update Zero-Legacy Drawdown
-    target_spend, target_drawdown = calculate_zero_legacy_drawdown(combined_capital, content)
+    # Inject LITTLE_CASH and update SAVINGS
+    content = re.sub(r'(CONST_OPERATIONAL_CASH_BUFFER:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${cash_engine['SAVINGS']:,.2f}", content)
+    
+    if 'CONST_BROKERAGE_LITTLE_CASH' not in content:
+        content = content.replace('CONST_OPERATIONAL_CASH_BUFFER', f'CONST_BROKERAGE_LITTLE_CASH: ${cash_engine["LITTLE_CASH"]:,.2f} (Floating Brokerage Cash)\n   CONST_OPERATIONAL_CASH_BUFFER')
+    else:
+        content = re.sub(r'(CONST_BROKERAGE_LITTLE_CASH:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${cash_engine['LITTLE_CASH']:,.2f}", content)
+    
+    target_spend, target_drawdown = calculate_zero_legacy_drawdown(cash_engine['TOTAL_CAPITAL'], content)
     if target_spend and target_drawdown:
         content = re.sub(r'(CONST_TARGET_LIFESTYLE_SPEND\s+:\s+)\$[\d,]+\.\d{2}/year \(\$[\d,]+\.\d{2}/month\)', r'\g<1>' + f"${target_spend:,.2f}/year (${(target_spend/12):,.2f}/month)", content)
         content = re.sub(r'(CONST_TARGET_NET_DRAWDOWN_GAP:\s+)\$[\d,]+\.\d{2}/year \(\$[\d,]+\.\d{2}/month\)', r'\g<1>' + f"${target_drawdown:,.2f}/year (${(target_drawdown/12):,.2f}/month)", content)
@@ -353,24 +356,22 @@ def generate_master_constants(old_const_text, routing_data, current_version, new
         f.write(content)
     print(f"System: Saved {filename}")
 
-def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=38):
+def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, cash_engine, total_executed_equities, current_version=38):
     print("System: Generating Core File 2 (Portfolio Ledger)...")
     new_version = current_version + 1
     today = datetime.now().strftime("%Y-%m-%d")
     market_status = routing_data.get('market_state', 'NORMAL')
     
-    # Initialize Buckets
     buckets = {
         2: {'name': 'U.S. LARGE-CAP CORE & GROWTH', 'account': '...0331', 'holdings': [], 'total': 0.0},
         3: {'name': 'HIGH-YIELD INCOME', 'account': '...2008', 'holdings': [], 'total': 0.0},
         4: {'name': 'U.S. MID / SMALL-CAP EQUITY', 'account': '...7851', 'holdings': [], 'total': 0.0},
         5: {'name': 'INTERNATIONAL EQUITIES', 'account': '...2641', 'holdings': [], 'total': 0.0},
-        6: {'name': 'TRADITIONAL IRA (TAX-SHELTERED CORE)', 'account': '...5669', 'holdings': [], 'total': 0.0},
+        6: {'name': 'TRADITIONAL IRA (TAX-SHELTERED CORE)', 'account': f"...{prev_state['ira_acct']}", 'holdings': [], 'total': 0.0},
         7: {'name': 'U.S. DIVIDEND GROWTH & APPRECIATION', 'account': '...2654', 'holdings': [], 'total': 0.0},
         8: {'name': 'TAX-FREE / ULTRA-SHORT TREASURY STABILIZER', 'account': '...2670', 'holdings': [], 'total': 0.0}
     }
 
-    # Process IRA (Always Bucket 6)
     for sym, data in sorted(ira.items()):
         if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10: continue
         gain_str = f"+${data['Total Gain $']:,.2f}" if data['Total Gain $'] >= 0 else f"-${abs(data['Total Gain $']):,.2f}"
@@ -380,37 +381,27 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
 
     dynamic_ticker_map = prev_state.get('ticker_map', {})
 
-    # Process Taxable (Routed via Dynamic Map)
     for sym, data in sorted(taxable.items()):
         if sym.lower() in ['cash', 'total', 'nan', ''] or 'generated' in sym.lower() or len(sym) > 10: continue
-        b_idx = dynamic_ticker_map.get(sym, 2) # Default to 2 if unknown (New Ticker)
+        b_idx = dynamic_ticker_map.get(sym, 2)
         gain_str = f"+${data['Total Gain $']:,.2f}" if data['Total Gain $'] >= 0 else f"-${abs(data['Total Gain $']):,.2f}"
         line = f"      * {sym:<4} : {data['Quantity']:.4f} shares\n        [Price: ${data['Last Price $']:.3f} | Basis: ${data['Basis $']:,.2f} | Value: ${data['Value $']:,.2f} | {gain_str}]"
         buckets[b_idx]['holdings'].append(line)
         buckets[b_idx]['total'] += data['Value $']
 
-    total_executed_equities = sum(b['total'] for b in buckets.values())
+    # Dynamic Bucket 1 Rebuild
+    b1_holdings = f"      * Operational Cash (E*TRADE Savings ...1600):    ${cash_engine['SAVINGS']:,.2f} [In E*TRADE]\n"
+    for cd in cash_engine['active_cds']:
+        b1_holdings += f"      * {cd['name']}:            ${cd['value']:,.2f} [{cd['loc']}]\n"
     
-    # Dynamic Cash from 3-CSV Architecture
-    etrade_cds = prev_state['etrade_cds']
-    ext_cds = prev_state['ext_cds']
-    
-    uninvested_cash = prev_state.get('brokerage_cash', prev_state['uninvested_cash'])
-    total_platform_cash = prev_state.get('total_platform_cash', 0.0)
-    
-    if total_platform_cash > 0:
-        op_cash = total_platform_cash - uninvested_cash
-    else:
-        op_cash = prev_state['op_cash']
-        
-    etrade_platform_assets = total_executed_equities + uninvested_cash + op_cash + etrade_cds
-    combined_capital = etrade_platform_assets + ext_cds
-
-    # Update Bucket 1 text dynamically (Hardened Regex)
-    b1_text = prev_state['bucket_1']
-    b1_text = re.sub(r'(Operational Cash \(E\*TRADE Savings \.\.\.1600\):.*?)[+-]?\$[+-]?[\d,]+\.\d{2}', r'\g<1>' + f"${op_cash:,.2f}", b1_text)
-    b1_text = re.sub(r'(Subtotal E\*TRADE Bucket 1 Capital.*?)[+-]?\$[+-]?[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds):,.2f}", b1_text)
-    b1_text = re.sub(r'(Total Bucket 1 Liquidity.*?)[+-]?\$[+-]?[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds + ext_cds):,.2f}", b1_text)
+    b1_text = f"""[BUCKET 1] LIQUIDITY & PRESERVATION
+  - Identity: Short-Term Liquidity, Safety, & Risk Insulation Buffer
+  - Holdings Breakdown:
+{b1_holdings.rstrip()}
+  - Subtotal E*TRADE Bucket 1 Capital:               ${(cash_engine['SAVINGS'] + cash_engine['etrade_cd_total']):,.2f}
+  - Subtotal External Bucket 1 Capital:              ${cash_engine['OUTSIDE_CD_ACCOUNT']:,.2f}
+  - Total Bucket 1 Liquidity:                        ${(cash_engine['SAVINGS'] + cash_engine['etrade_cd_total'] + cash_engine['OUTSIDE_CD_ACCOUNT']):,.2f}
+  - Status: ACTIVE / RECONCILED"""
 
     today_dt = datetime.strptime(today, "%Y-%m-%d")
     active_milestones = []
@@ -421,11 +412,10 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
             if (today_dt - m_date).days <= 730:
                 active_milestones.append(m)
 
-    # Extract live YTD Drawdown from Pacing Engine
     ytd_match = re.search(r'Total B \(Actual YTD Drawdown\):\s+\$?([\d,]+\.\d{2})', prev_state.get('pacing_engine', ''))
     ytd_drawdown = float(ytd_match.group(1).replace(',', '')) if ytd_match else 0.0
 
-    new_milestone = f"[{today} | ${combined_capital:,.2f} | ${total_executed_equities:,.2f} | ${(uninvested_cash + op_cash + etrade_cds + ext_cds):,.2f} | ${ytd_drawdown:,.2f} | {market_status}]"
+    new_milestone = f"[{today} | ${cash_engine['TOTAL_CAPITAL']:,.2f} | ${total_executed_equities:,.2f} | ${(cash_engine['BIG_CASH'] + cash_engine['OUTSIDE_CD_ACCOUNT']):,.2f} | ${ytd_drawdown:,.2f} | {market_status}]"
     active_milestones.append(new_milestone)
     milestone_block = "\n".join(active_milestones)
 
@@ -434,7 +424,7 @@ PORTFOLIO ALLOCATION LEDGER & BUCKET STRUCTURE
 Date: {today} (Version {new_version})
 Framework Structure: 8 Macro Asset Buckets (Single Account Architecture)
 Active Market Status Designation: [{market_status}]
-Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...5669)
+Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...{prev_state['ira_acct']})
 ================================================================================
 
 {prev_state['tax_ledger']}
@@ -467,15 +457,15 @@ Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...5669)
 RECONCILED TOTAL SYSTEM CAPITAL (ZERO DOUBLE-COUNTING AUDIT)
 ================================================================================
   - Total Executed Holdings Market Value (Buckets 2–8):         ${total_executed_equities:,.2f}
-  - E*TRADE Reported Total Platform Cash Line:                    ${(uninvested_cash + op_cash + etrade_cds):,.2f}
+  - E*TRADE Reported Total Platform Cash Line:                    ${cash_engine['BIG_CASH']:,.2f}
       * Consisting of:
-        - Uninvested Brokerage Cash (Buckets 2–8):      ${uninvested_cash:,.2f}
-        - Operational Cash Buffer (Savings ...1600): ${op_cash:,.2f}
-        - E*TRADE CD Ladder (4 x $100k Tranches):   ${etrade_cds:,.2f}
-  - Subtotal E*TRADE Platform Assets:                           ${etrade_platform_assets:,.2f}
-  - External Bank Capital (CD Bucket #1):                         ${ext_cds:,.2f}
+        - Uninvested Brokerage Cash (LITTLE_CASH):      ${cash_engine['LITTLE_CASH']:,.2f}
+        - Operational Cash Buffer (Savings ...1600): ${cash_engine['SAVINGS']:,.2f}
+        - E*TRADE CD Ladder:                        ${cash_engine['etrade_cd_total']:,.2f}
+  - Subtotal E*TRADE Platform Assets:                           ${(total_executed_equities + cash_engine['BIG_CASH']):,.2f}
+  - External Bank Capital (CD Bucket #1):                         ${cash_engine['OUTSIDE_CD_ACCOUNT']:,.2f}
 --------------------------------------------------------------------------------
-  - COMBINED TOTAL SYSTEM CAPITAL:                              ${combined_capital:,.2f}
+  - COMBINED TOTAL SYSTEM CAPITAL:                              ${cash_engine['TOTAL_CAPITAL']:,.2f}
 ================================================================================
 
 ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
@@ -490,7 +480,6 @@ ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
     print(f"System: Saved {filename}")
 
 def extract_all_cash(filepath):
-    """Robustly extracts and sums all CASH rows, bypassing pandas trailing comma drops."""
     total = 0.0
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -508,6 +497,33 @@ def extract_all_cash(filepath):
 def main():
     print("System: Initializing Avenue C Ingestion Engine...")
     try:
+        # Extract previous state FIRST (Graceful Degradation Loop)
+        while True:
+            try:
+                prev_state = parse_previous_ledger(DIR_CORE_ACTIVE)
+                old_ledger_path = prev_state['file_path']
+                break
+            except FileNotFoundError as e:
+                print(f"\n\033[91m[ERROR] {e}\033[0m")
+                input("\033[96mPlace the previous Portfolio Ledger in 00_CORE_Files and press ENTER to retry...\033[0m")
+                
+        # Dynamically find latest Constants version
+        old_const_path = None
+        old_const_text = ""
+        while True:
+            const_files = glob.glob(os.path.join(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt"))
+            if const_files:
+                latest_const = sorted(const_files)[-1]
+                old_const_path = latest_const
+                const_match = re.search(r'_v(\d+)\.txt', latest_const)
+                const_version = int(const_match.group(1)) if const_match else 0
+                with open(latest_const, 'r', encoding='utf-8') as f:
+                    old_const_text = f.read()
+                break
+            else:
+                print(f"\n\033[91m[ERROR] Core File 1 (Master Constants) not found in '{DIR_CORE_ACTIVE}'.\033[0m")
+                input("\033[96mPlace the previous Master Constants in 00_CORE_Files and press ENTER to retry...\033[0m")
+
         print("\n" + "=" * 80)
         print("STEP 1: DATA INGESTION")
         print("=" * 80)
@@ -515,12 +531,12 @@ def main():
             print("Please download fresh CSV files for:")
             print("1. 'All brokerage and bank accounts' CSV")
             print("2. 'All brokerage accounts' CSV (Name it: PortfolioDownload_2-8_*.csv)")
-            print("3. 'Traditional IRA -5669' CSV")
+            print(f"3. 'Traditional IRA -{prev_state['ira_acct']}' CSV")
             input(f"Place them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...")
             try:
                 all_accounts_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_AllAccounts*.csv")
                 brokerage_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_2-8*.csv")
-                ira_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_5669*.csv")
+                ira_csv = get_latest_file(DIR_CSV_ACTIVE, f"PortfolioDownload_{prev_state['ira_acct']}*.csv")
                 print(f"\n✅ Detected: {os.path.basename(all_accounts_csv)}")
                 print(f"✅ Detected: {os.path.basename(brokerage_csv)}")
                 print(f"✅ Detected: {os.path.basename(ira_csv)}")
@@ -547,29 +563,14 @@ def main():
         print("STEP 3: DELTA CHECK (SOLD / BOUGHT TICKERS)")
         print("-" * 80)
         
-        # Extract previous state FIRST to get old tickers (Graceful Degradation Loop)
-        while True:
-            try:
-                prev_state = parse_previous_ledger(DIR_CORE_ACTIVE)
-                old_ledger_path = prev_state['file_path']
-                break
-            except FileNotFoundError as e:
-                print(f"\n\033[91m[ERROR] {e}\033[0m")
-                input("\033[96mPlace the previous Portfolio Ledger in 00_CORE_Files and press ENTER to retry...\033[0m")
-                
         prev_state['ticker_map'].update(metadata_overrides)
         
         df_brokerage = alu_utils.load_and_clean_csv(brokerage_csv)
         df_ira = alu_utils.load_and_clean_csv(ira_csv)
         
-        # Extract live CASH rows via robust regex aggregation
-        prev_state['total_platform_cash'] = extract_all_cash(all_accounts_csv)
-        prev_state['brokerage_cash'] = extract_all_cash(brokerage_csv) + extract_all_cash(ira_csv)
-        
         taxable, ira = alu_utils.disaggregate_holdings(df_brokerage, df_ira)
         
         old_tickers = set(prev_state['ticker_map'].keys())
-        # ANTI-LOOP: Only track delta for taxable assets to prevent IRA false-positives
         new_tickers = set(taxable.keys())
         
         sold_tickers = old_tickers - new_tickers
@@ -600,56 +601,85 @@ def main():
                     print("\033[96mNaming convention: Must start with 'RealizedGains' (e.g., RealizedGains_XXXX.csv).\033[0m")
                     input(f"\033[96mPlace them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...\033[0m")
                     
-        print("\n[DELTA CHECK COMPLETE: No Missing Info.] Proceeding to Data Processing...\n")
+        print("\n[DELTA CHECK COMPLETE: No Missing Info.]\n")
         
+        print("-" * 80)
+        print("STEP 4: DYNAMIC CD MANAGER")
+        print("-" * 80)
+        active_cds = prev_state.get('cd_list', [])
+        if active_cds:
+            while True:
+                print("\nCurrent Active CDs Detected:")
+                for i, cd in enumerate(active_cds):
+                    print(f"  {i+1}. {cd['name']}: ${cd['value']:,.2f} [{cd['loc']}]")
+                
+                ans = input("\nAre there any changes to the CD accounts (e.g., a CD matured)? (Y/N): ").strip().upper()
+                if ans == 'Y':
+                    try:
+                        idx = int(input("Enter the number of the CD to remove: ").strip()) - 1
+                        if 0 <= idx < len(active_cds):
+                            removed = active_cds.pop(idx)
+                            print(f"\033[92m[SUCCESS] Removed: {removed['name']}\033[0m")
+                        else:
+                            print("\033[91m[ERROR] Invalid number.\033[0m")
+                    except ValueError:
+                        print("\033[91m[ERROR] Please enter a valid number.\033[0m")
+                elif ans == 'N':
+                    break
+                else:
+                    print("\033[91m[ERROR] Please enter Y or N.\033[0m")
+        
+        print("\nProceeding to Data Processing...\n")
+        
+        # --- THE CASH ENGINE ---
         total_taxable_value = sum(data['Value $'] for data in taxable.values())
         total_ira_value = sum(data['Value $'] for data in ira.values())
         total_executed_equities = total_taxable_value + total_ira_value
         
-        current_savings = prev_state.get('total_platform_cash', 0.0) - prev_state.get('brokerage_cash', 0.0)
+        etrade_cd_total = sum(cd['value'] for cd in active_cds if 'E*TRADE' in cd['loc'].upper())
+        external_cd_total = sum(cd['value'] for cd in active_cds if 'EXTERNAL' in cd['loc'].upper())
+        
+        LITTLE_CASH = extract_all_cash(brokerage_csv) + extract_all_cash(ira_csv)
+        BIG_CASH = extract_all_cash(all_accounts_csv)
+        OUTSIDE_CD_ACCOUNT = external_cd_total
+        
+        CD_AND_SAVINGS_CASH = BIG_CASH - LITTLE_CASH
+        SAVINGS = CD_AND_SAVINGS_CASH - etrade_cd_total
+        TOTAL_CAPITAL = total_executed_equities + BIG_CASH + OUTSIDE_CD_ACCOUNT
+        
+        cash_engine = {
+            'LITTLE_CASH': LITTLE_CASH,
+            'BIG_CASH': BIG_CASH,
+            'SAVINGS': SAVINGS,
+            'TOTAL_CAPITAL': TOTAL_CAPITAL,
+            'active_cds': active_cds,
+            'etrade_cd_total': etrade_cd_total,
+            'OUTSIDE_CD_ACCOUNT': OUTSIDE_CD_ACCOUNT
+        }
+        
+        # --- API ROUTING ---
+        target_match = re.search(r'CONST_SAVINGS_TARGET\s*:\s*\$([\d,]+\.\d{2})', old_const_text)
+        savings_target = float(target_match.group(1).replace(',', '')) if target_match else 85000.00
+        
         telemetry_payload = {
             "total_executed_equities": round(total_executed_equities, 2),
-            "current_savings_balance": current_savings,
-            "target_savings_balance": 85000.00,
-            "tank_capacity_ratio": current_savings / 85000.00
+            "current_savings_balance": SAVINGS,
+            "target_savings_balance": savings_target,
+            "tank_capacity_ratio": SAVINGS / savings_target if savings_target > 0 else 1.0
         }
         
         routing_data = query_strategic_routing(telemetry_payload)
         
-        # Execute Tax Engine (Now with API Truth)
-        prev_state['tax_ledger'] = process_tax_and_wash_sales(prev_state['tax_ledger'], gains_files, sold_tickers, routing_data)
+        prev_state['tax_ledger'] = process_tax_and_wash_sales(prev_state['tax_ledger'], gains_files, sold_tickers, routing_data, prev_state)
         
-        # Dynamically find latest Constants version (Graceful Degradation Loop)
-        old_const_path = None
-        old_const_text = ""
-        while True:
-            const_files = glob.glob(os.path.join(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt"))
-            if const_files:
-                latest_const = sorted(const_files)[-1]
-                old_const_path = latest_const
-                const_match = re.search(r'_v(\d+)\.txt', latest_const)
-                const_version = int(const_match.group(1)) if const_match else 0
-                with open(latest_const, 'r', encoding='utf-8') as f:
-                    old_const_text = f.read()
-                break
-            else:
-                print(f"\n\033[91m[ERROR] Core File 1 (Master Constants) not found in '{DIR_CORE_ACTIVE}'.\033[0m")
-                input("\033[96mPlace the previous Master Constants in 00_CORE_Files and press ENTER to retry...\033[0m")
-        
-        # Execute Phase 4: File Generation
+        # --- FILE GENERATION ---
         new_ledger_version = prev_state['ledger_version'] + 1
         
-        # Centralized combined_capital math (FIXED: added etrade_cds)
-        combined_capital = total_executed_equities + prev_state.get('total_platform_cash', 0.0) + prev_state['etrade_cds'] + prev_state['ext_cds']
-        
-        # Calculate new drawdown gap BEFORE updating pacing engine
-        target_spend, target_drawdown = calculate_zero_legacy_drawdown(combined_capital, old_const_text)
-        
-        # Pass the new gap to the pacing engine
+        target_spend, target_drawdown = calculate_zero_legacy_drawdown(TOTAL_CAPITAL, old_const_text)
         prev_state['pacing_engine'] = update_pacing_engine(prev_state['pacing_engine'], old_const_text, new_target_gap=target_drawdown)
         
-        generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version, combined_capital)
-        generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
+        generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version, cash_engine, prev_state)
+        generate_portfolio_ledger(taxable, ira, routing_data, prev_state, cash_engine, total_executed_equities, current_version=prev_state['ledger_version'])
         
         print("\n=== PHASE 4 COMPLETE ===")
         print(f"Core Files generated successfully in {DIR_CORE_ACTIVE}.")
