@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.2.5 (Cash Aggregation & Bridge Math Fix)
+#Version: 2.2.6 (Hardened Regex & Centralized NAV Math)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.5"
+__version__ = "2.2.6"
 __date__ = "2026-09-12"
 
 import os
@@ -31,6 +31,11 @@ def get_latest_file(directory, pattern):
         raise FileNotFoundError(f"FATAL: No files found matching pattern: {pattern} in {directory}")
     return sorted(files)[-1]
 
+def extract_currency(pattern, text):
+    """Robustly extracts currency, handling both -$500 and $-500 formatting anomalies."""
+    match = re.search(pattern + r'.*?([+-]?\$[+-]?[\d,]+\.\d{2})', text)
+    return float(match.group(1).replace('$', '').replace(',', '')) if match else 0.0
+
 def parse_previous_ledger(core_dir):
     print("System: Parsing previous ledger for persistent state...")
     files = glob.glob(os.path.join(core_dir, "GEM_Retirement_Portfolio_Ledger_*.txt"))
@@ -55,10 +60,10 @@ def parse_previous_ledger(core_dir):
     b1_match = re.search(r'(\[BUCKET 1\] LIQUIDITY & PRESERVATION.*?)(?=\n-{50,}\n+\[BUCKET 2\])', content, re.DOTALL)
     b1_text = b1_match.group(1).strip() if b1_match else "[BUCKET 1] LIQUIDITY & PRESERVATION\n[DATA NOT FOUND]"
     
-    uninvested = float(re.search(r'Uninvested Brokerage Cash.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'Uninvested Brokerage Cash.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
-    op_cash = float(re.search(r'Operational Cash Buffer.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'Operational Cash Buffer.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
-    etrade_cds = float(re.search(r'E\*TRADE CD Ladder.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'E\*TRADE CD Ladder.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
-    ext_cds = float(re.search(r'External Bank Capital.*?\$\s*([\d,]+\.\d{2})', content).group(1).replace(',', '')) if re.search(r'External Bank Capital.*?\$\s*([\d,]+\.\d{2})', content) else 0.0
+    uninvested = extract_currency(r'Uninvested Brokerage Cash', content)
+    op_cash = extract_currency(r'Operational Cash Buffer', content)
+    etrade_cds = extract_currency(r'E\*TRADE CD Ladder', content)
+    ext_cds = extract_currency(r'External Bank Capital', content)
     
     dynamic_ticker_map = {}
     bucket_blocks = re.findall(r'\[BUCKET (\d)\](.*?)(?=\n\[BUCKET|\n={80})', content, re.DOTALL)
@@ -220,13 +225,18 @@ def calculate_pending_liabilities(const_text):
             liabilities += float(val_str.replace(',', ''))
     return liabilities
 
-def update_pacing_engine(pacing_text, const_text):
+def update_pacing_engine(pacing_text, const_text, new_target_gap=None):
     today = datetime.now()
     today_str = today.strftime("%Y-%m-%d")
     pacing_text = re.sub(r'Current Date:\s+\d{4}-\d{2}-\d{2}', f'Current Date: {today_str}', pacing_text)
-    gap_match = re.search(r'Annual Target Net Drawdown Gap:\s+\$?([\d,]+\.\d{2})', pacing_text)
-    if not gap_match: return pacing_text
-    annual_gap = float(gap_match.group(1).replace(',', ''))
+    
+    if new_target_gap:
+        annual_gap = new_target_gap
+        pacing_text = re.sub(r'(Annual Target Net Drawdown Gap:\s+)[+-]?\$[+-]?[\d,]+\.\d{2}', r'\g<1>' + f"${annual_gap:,.2f}", pacing_text)
+    else:
+        gap_match = re.search(r'Annual Target Net Drawdown Gap:\s+\$?([\d,]+\.\d{2})', pacing_text)
+        annual_gap = float(gap_match.group(1).replace(',', '')) if gap_match else 0.0
+        
     day_of_year = today.timetuple().tm_yday
     days_in_year = 366 if today.year % 4 == 0 and (today.year % 100 != 0 or today.year % 400 == 0) else 365
     paced_target = annual_gap * (day_of_year / days_in_year)
@@ -396,11 +406,11 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
     etrade_platform_assets = total_executed_equities + uninvested_cash + op_cash + etrade_cds
     combined_capital = etrade_platform_assets + ext_cds
 
-    # Update Bucket 1 text dynamically
+    # Update Bucket 1 text dynamically (Hardened Regex)
     b1_text = prev_state['bucket_1']
-    b1_text = re.sub(r'(Operational Cash Buffer.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${op_cash:,.2f}", b1_text)
-    b1_text = re.sub(r'(Subtotal E\*TRADE Bucket 1 Capital.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds):,.2f}", b1_text)
-    b1_text = re.sub(r'(Total Bucket 1 Liquidity.*?)\$[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds + ext_cds):,.2f}", b1_text)
+    b1_text = re.sub(r'(Operational Cash \(E\*TRADE Savings \.\.\.1600\):.*?)[+-]?\$[+-]?[\d,]+\.\d{2}', r'\g<1>' + f"${op_cash:,.2f}", b1_text)
+    b1_text = re.sub(r'(Subtotal E\*TRADE Bucket 1 Capital.*?)[+-]?\$[+-]?[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds):,.2f}", b1_text)
+    b1_text = re.sub(r'(Total Bucket 1 Liquidity.*?)[+-]?\$[+-]?[\d,]+\.\d{2}', r'\g<1>' + f"${(op_cash + etrade_cds + ext_cds):,.2f}", b1_text)
 
     today_dt = datetime.strptime(today, "%Y-%m-%d")
     active_milestones = []
@@ -618,9 +628,16 @@ def main():
         
         # Execute Phase 4: File Generation
         new_ledger_version = prev_state['ledger_version'] + 1
-        prev_state['pacing_engine'] = update_pacing_engine(prev_state['pacing_engine'], old_const_text)
         
-        combined_capital = total_executed_equities + prev_state.get('total_platform_cash', 0.0) + prev_state['ext_cds']
+        # Centralized combined_capital math (FIXED: added etrade_cds)
+        combined_capital = total_executed_equities + prev_state.get('total_platform_cash', 0.0) + prev_state['etrade_cds'] + prev_state['ext_cds']
+        
+        # Calculate new drawdown gap BEFORE updating pacing engine
+        target_spend, target_drawdown = calculate_zero_legacy_drawdown(combined_capital, old_const_text)
+        
+        # Pass the new gap to the pacing engine
+        prev_state['pacing_engine'] = update_pacing_engine(prev_state['pacing_engine'], old_const_text, new_target_gap=target_drawdown)
+        
         generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version, combined_capital)
         generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
         
