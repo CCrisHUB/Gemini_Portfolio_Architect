@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.2.4 (Zero-Legacy Horizon Math Fix)
+#Version: 2.2.5 (Cash Aggregation & Bridge Math Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.4"
+__version__ = "2.2.5"
 __date__ = "2026-09-12"
 
 import os
@@ -389,7 +389,7 @@ def generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_ve
     total_platform_cash = prev_state.get('total_platform_cash', 0.0)
     
     if total_platform_cash > 0:
-        op_cash = total_platform_cash - uninvested_cash - etrade_cds
+        op_cash = total_platform_cash - uninvested_cash
     else:
         op_cash = prev_state['op_cash']
         
@@ -479,6 +479,22 @@ ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
         f.write(content)
     print(f"System: Saved {filename}")
 
+def extract_all_cash(filepath):
+    """Robustly extracts and sums all CASH rows, bypassing pandas trailing comma drops."""
+    total = 0.0
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        matches = re.findall(r'\nCASH,.*?,([-\d\.,]+)', content)
+        for m in matches:
+            try:
+                total += float(m.replace(',', ''))
+            except ValueError:
+                pass
+    except Exception as e:
+        print(f"Warning: Could not extract cash from {filepath}: {e}")
+    return total
+
 def main():
     print("System: Initializing Avenue C Ingestion Engine...")
     try:
@@ -529,14 +545,9 @@ def main():
         df_brokerage = alu_utils.load_and_clean_csv(brokerage_csv)
         df_ira = alu_utils.load_and_clean_csv(ira_csv)
         
-        # Extract live CASH rows via regex to bypass pandas trailing comma drops
-        with open(all_accounts_csv, 'r', encoding='utf-8') as f:
-            all_cash_match = re.search(r'\nCASH,.*?,([-\d\.,]+)', f.read())
-        prev_state['total_platform_cash'] = float(all_cash_match.group(1).replace(',', '')) if all_cash_match else 0.0
-        
-        with open(brokerage_csv, 'r', encoding='utf-8') as f:
-            brok_cash_match = re.search(r'\nCASH,.*?,([-\d\.,]+)', f.read())
-        prev_state['brokerage_cash'] = float(brok_cash_match.group(1).replace(',', '')) if brok_cash_match else 0.0
+        # Extract live CASH rows via robust regex aggregation
+        prev_state['total_platform_cash'] = extract_all_cash(all_accounts_csv)
+        prev_state['brokerage_cash'] = extract_all_cash(brokerage_csv) + extract_all_cash(ira_csv)
         
         taxable, ira = alu_utils.disaggregate_holdings(df_brokerage, df_ira)
         
@@ -578,11 +589,12 @@ def main():
         total_ira_value = sum(data['Value $'] for data in ira.values())
         total_executed_equities = total_taxable_value + total_ira_value
         
+        current_savings = prev_state.get('total_platform_cash', 0.0) - prev_state.get('brokerage_cash', 0.0)
         telemetry_payload = {
             "total_executed_equities": round(total_executed_equities, 2),
-            "current_savings_balance": prev_state.get('total_platform_cash', 0.0) - prev_state.get('brokerage_cash', 0.0) - prev_state['etrade_cds'],
+            "current_savings_balance": current_savings,
             "target_savings_balance": 85000.00,
-            "tank_capacity_ratio": (prev_state.get('total_platform_cash', 0.0) - prev_state.get('brokerage_cash', 0.0) - prev_state['etrade_cds']) / 85000.00
+            "tank_capacity_ratio": current_savings / 85000.00
         }
         
         routing_data = query_strategic_routing(telemetry_payload)
