@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-12
-#Version: 1.8.0 (Data Provenance & Epistemological Guardrails)
+#Version: 1.9.0 (State Tax Integration for Yield Calculations)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.8.0"
+__version__ = "1.9.0"
 __date__ = "2026-09-12"
 
 import os
@@ -123,6 +123,10 @@ def extract_tax_headroom(ledger_text: str) -> str:
     match = re.search(r'Remaining 0% LTCG Headroom:\s+\$([\d,]+\.\d{2})', ledger_text)
     return f"${match.group(1)}" if match else "UNKNOWN"
 
+def extract_state_of_residence(constants_text: str) -> str:
+    match = re.search(r'State of Residence:\s*(.*)', constants_text)
+    return match.group(1).strip() if match else "UNKNOWN"
+
 def map_tickers_to_buckets(ledger_text: str) -> dict:
     mapping = {}
     current_bucket = "UNKNOWN"
@@ -215,7 +219,7 @@ def get_ad_hoc_inquiry() -> str:
         print(f"\n{ANSI_CYAN}[System] No ad-hoc inquiry. Proceeding with standard audit...{ANSI_RESET}")
     return user_input
 
-def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
+def gather_live_macro_data(client, targets: list, ad_hoc_query: str, state_of_residence: str) -> str:
     print(f"{ANSI_CYAN}[System] Initiating Live Web Search via Gemini API...{ANSI_RESET}")
     print(f"{ANSI_YELLOW}[API DISCLOSURE] Model: {LLM_MODEL_NAME} | Tool: Google Search | Thinking: High{ANSI_RESET}")
     
@@ -223,6 +227,9 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
     
     search_prompt = f"""
     You are a financial data retrieval engine. You have access to Google Search.
+    
+    [USER CONTEXT]
+    State of Residence: {state_of_residence}
     
     [DATA PROVENANCE MANDATE]
     RESTRICT ALL SEARCHES to Tier-1 financial institutions (e.g., Morningstar, Bloomberg, Reuters, Federal Reserve, WSJ). EXCLUDE all social media, Reddit, and opinion blogs (e.g., Motley Fool, Seeking Alpha).
@@ -259,7 +266,7 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
 # ==============================================================================
 # PHASE 4: LLM INTEGRATION & INTERACTIVE CHAT LOOP
 # ==============================================================================
-def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, active_symbols: list, tax_headroom: str, custom_instructions: str, ledger_text: str):
+def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, active_symbols: list, tax_headroom: str, state_of_residence: str, custom_instructions: str, ledger_text: str):
     print(f"\n{ANSI_CYAN}[System] Initializing {LLM_MODEL_NAME} (Thinking Level: High)...{ANSI_RESET}")
     
     chat_session = client.chats.create(
@@ -295,6 +302,9 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
     
     7. Remaining 0% LTCG Tax Headroom:
     {tax_headroom}
+    
+    8. State of Residence (For Tax-Equivalent Yields):
+    {state_of_residence}
     
     [FIDUCIARY MANDATE & GUARDRAILS]
     1. Recommend Tax-Loss Harvesting proxies strictly from the 'Vetted_Proxies' list provided in the Portfolio Math payload.
@@ -473,6 +483,7 @@ def main():
     lockouts = extract_wash_sale_lockouts(ledger_text)
     min_days = extract_min_statistical_days(constants_text)
     tax_headroom = extract_tax_headroom(ledger_text)
+    state_of_residence = extract_state_of_residence(constants_text)
     ticker_map = map_tickers_to_buckets(ledger_text)
     
     # 4. Process CSVs & Triage via ALU Module
@@ -487,7 +498,7 @@ def main():
     
     # 5. Pre-Flight & Search
     ad_hoc_query = get_ad_hoc_inquiry()
-    search_data = gather_live_macro_data(client, targets, ad_hoc_query)
+    search_data = gather_live_macro_data(client, targets, ad_hoc_query, state_of_residence)
     
     # 6. LLM Integration
     custom_instructions = load_file_content(instructions_file)
@@ -501,6 +512,7 @@ def main():
         lockouts=lockouts,
         active_symbols=active_symbols,
         tax_headroom=tax_headroom,
+        state_of_residence=state_of_residence,
         custom_instructions=custom_instructions,
         ledger_text=ledger_text
     )
