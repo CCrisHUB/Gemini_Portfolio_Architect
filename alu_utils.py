@@ -2,10 +2,10 @@
 #"""
 #Avenue C Arithmetic Logic Unit (ALU) Utilities
 #Date: 2026-09-12
-#Version: 1.1.0 (Backward-Compatible Date Acquired Passthrough)
+#Version: 1.2.0 (Deterministic TLH Proxy Mapping)
 #Role: Shared deterministic math and CSV parsing functions.
 #"""
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __date__ = "2026-09-12"
 
 import pandas as pd
@@ -13,6 +13,39 @@ import numpy as np
 import os
 import io
 
+# ==============================================================================
+# DETERMINISTIC TLH PROXY MAP (IRS WASH-SALE COMPLIANT)
+# ==============================================================================
+TLH_PROXY_MAP = {
+    'VOO': ['VTI', 'SCHX', 'VV'],
+    'SCHX': ['VOO', 'VTI', 'VV'],
+    'SCHD': ['VYM', 'HDV', 'FDVV'],
+    'SCHG': ['VUG', 'QQQ', 'IWF'],
+    'AVUV': ['VBR', 'IJS', 'SLYV'],
+    'VXUS': ['IXUS', 'VEU', 'SPDW'],
+    'VIG': ['DGRO', 'VDIGX', 'SCHD'],
+    'DGRO': ['VIG', 'SCHD', 'VDIGX'],
+    'QUAL': ['SPHQ', 'JQUA', 'XLG'],
+    'GSLC': ['USMV', 'SPLV', 'SPY'],
+    'MAIN': ['ARCC', 'OBDC', 'FSK'],
+    'O': ['VNQ', 'SCHH', 'XLRE'],
+    'SCHA': ['VB', 'IJR', 'SPSM'],
+    'SCHM': ['VO', 'IWR', 'MDY'],
+    'AVDV': ['ISCF', 'SCHC', 'GWX'],
+    'EMXC': ['VWO', 'IEMG', 'EEM'],
+    'VIGI': ['VYMI', 'SCHY', 'IDV'],
+    'USFR': ['SGOV', 'BIL', 'SHV']
+}
+
+def get_safe_proxies(ticker, active_symbols, lockouts):
+    """Returns a list of pre-vetted proxies that do not violate wash-sale or overlap rules."""
+    candidates = TLH_PROXY_MAP.get(ticker, [])
+    safe = [c for c in candidates if c not in active_symbols and c not in lockouts]
+    return safe
+
+# ==============================================================================
+# CSV PARSING & DISAGGREGATION
+# ==============================================================================
 def load_and_clean_csv(filepath):
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"FATAL: Missing required file: {filepath}")
@@ -82,7 +115,6 @@ def disaggregate_holdings(df_all, df_ira):
     clean_ira_holdings = {}
 
     for sym, row in merged.iterrows():
-        # Safely extract Date Acquired if it exists, defaulting to 'Various'
         acq_date_all = row['Date Acquired_all'] if 'Date Acquired_all' in row and pd.notna(row['Date Acquired_all']) else 'Various'
         acq_date_ira = row['Date Acquired_ira'] if 'Date Acquired_ira' in row and pd.notna(row['Date Acquired_ira']) else 'Various'
 
