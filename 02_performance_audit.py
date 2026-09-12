@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-12
-#Version: 1.4.0 (Deterministic Bucket Mapping & Tax Headroom Patch)
+#Version: 1.5.0 (Fiduciary Instructions Integration)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 __date__ = "2026-09-12"
 
 import os
@@ -416,7 +416,7 @@ def main():
         try:
             constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
             ledger_file = get_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
-            instructions_file = get_latest_file(CORE_DIR, "GEM_Retirement_and_Portfolio_Architect_Custom_Instructions_*.txt")
+            instructions_file = get_latest_file(CORE_DIR, "Fiduciary_Architect_Instructions_*.txt")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(constants_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ledger_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(instructions_file)}{ANSI_RESET}")
