@@ -1,12 +1,12 @@
 #01_ingestion_engine.py
 #"""
 #Avenue C Ingestion Engine
-#Date: 2026-09-11
-#Version: 2.2.1 (Core File 1 State Preservation Fix)
+#Date: 2026-09-12
+#Version: 2.2.2 (Date-Aware Pacing Engine Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.1"
-__date__ = "2026-09-11"
+__version__ = "2.2.2"
+__date__ = "2026-09-12"
 
 import os
 import json
@@ -197,6 +197,24 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
     tax_ledger_text = re.sub(r'(Remaining 0% LTCG Headroom:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + f"${remaining_headroom:,.2f}".replace('\\', '\\\\'), tax_ledger_text)
     
     return tax_ledger_text
+
+def update_pacing_engine(pacing_text):
+    today = datetime.now()
+    today_str = today.strftime("%Y-%m-%d")
+    pacing_text = re.sub(r'Current Date:\s+\d{4}-\d{2}-\d{2}', f'Current Date: {today_str}', pacing_text)
+    gap_match = re.search(r'Annual Target Net Drawdown Gap:\s+\$?([\d,]+\.\d{2})', pacing_text)
+    if not gap_match: return pacing_text
+    annual_gap = float(gap_match.group(1).replace(',', ''))
+    day_of_year = today.timetuple().tm_yday
+    days_in_year = 366 if today.year % 4 == 0 and (today.year % 100 != 0 or today.year % 400 == 0) else 365
+    paced_target = annual_gap * (day_of_year / days_in_year)
+    actual_match = re.search(r'Total B \(Actual YTD Drawdown\):\s+\$?([\d,]+\.\d{2})', pacing_text)
+    actual_drawdown = float(actual_match.group(1).replace(',', '')) if actual_match else 0.0
+    gross_variance = actual_drawdown - paced_target
+    variance_str = f"-${abs(gross_variance):,.2f} (Under paced target)" if gross_variance < 0 else f"+${gross_variance:,.2f} (Over paced target)"
+    pacing_text = re.sub(r'(Total A \(Paced YTD Target\):\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${paced_target:,.2f}", pacing_text)
+    pacing_text = re.sub(r'(Pacing Variance \(Gross\):\s+)[+-]?\$[\d,]+\.\d{2}.*?(?=\n)', r'\g<1>' + variance_str, pacing_text)
+    return pacing_text
 
 def query_strategic_routing(telemetry_payload):
     print("System: Querying Neuro-Symbolic API for Strategic Routing (Live Web Search Enabled)...")
@@ -538,6 +556,7 @@ def main():
         
         # Execute Phase 4: File Generation
         new_ledger_version = prev_state['ledger_version'] + 1
+        prev_state['pacing_engine'] = update_pacing_engine(prev_state['pacing_engine'])
         generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version)
         generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
         
