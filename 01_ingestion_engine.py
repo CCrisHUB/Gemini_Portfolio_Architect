@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-11
-#Version: 2.2.0 (ALU Module Integration)
+#Version: 2.2.1 (Core File 1 State Preservation Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 __date__ = "2026-09-11"
 
 import os
@@ -242,7 +242,7 @@ def query_strategic_routing(telemetry_payload):
     except Exception as e:
         raise RuntimeError(f"API Boundary Failure: {e}")
 
-def generate_master_constants(routing_data, current_version=87):
+def generate_master_constants(old_const_text, routing_data, current_version, new_ledger_version):
     print("System: Generating Core File 1 (Master Constants)...")
     new_version = current_version + 1
     today = datetime.now().strftime("%Y-%m-%d")
@@ -252,108 +252,24 @@ def generate_master_constants(routing_data, current_version=87):
     ltcg = routing_data.get('ltcg_limit', 49200.0)
     max_gross = std_ded + ltcg
     
-    content = f"""================================================================================
-MASTER PROFILE CONSTANTS & FINANCIAL PARAMETERS
-Date: {today} (Version {new_version})
-Role: Core File 1 - Master Constants and Version Manifest
-File Name: GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt
-================================================================================
-
-0. ACTIVE CORE FILE VERSION MANIFEST
---------------------------------------------------------------------------------
-The following filenames specify the authoritative active version for each of
-the Core Files and Active Mega-Prompts governing this Gem. 
-
-  - Core File 1 (Master Constants):
-    GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt
-  - Core File 2 (Portfolio Ledger):
-    GEM_Retirement_Portfolio_Ledger_{today}_v39.txt
-  - Core File 3 (Custom Instructions):
-    GEM_Retirement_and_Portfolio_Architect_Custom_Instructions_2026-09-01_v30.txt
-
-  - Active Mega-Prompts:
-    * 01_ETrade_CSV_Ingestion_and_Portfolio_Ledger_Update_Prompt_2026-08-31_v45.txt
-    * 02_Fund_Performance_and_Structural_Audit_Prompt_2026-08-30_v33.txt
-    * 03_Trend_Tracking_and_Financial_Pacing_Prompt_2026-08-25_v4.txt
-    * 04_Spending_Request_and_Affordability_Evaluation_Prompt_2026-08-25_v3.txt
-    * 05_Dynamic_Custom_Sourcing_and_Multi_Bucket_Exemption_Prompt_2026-08-31_v22.txt
-    * 06_Dynamic_Standard_Cash_Withdrawal_Request_Prompt_2026-08-31_v23.txt
-    * 07_Expense_Payload_Patching_Prompt_2026-09-01_v1.txt
-
---------------------------------------------------------------------------------
-
-1. DEMOGRAPHIC, TAX & RMD STATUS
-   - Investor Status: Single widower, no dependents / no heirs.
-   - Date of Birth: September 21, 1955 (RMD Initial Year: 2028 / Age 73).
-   - Tax Filing Status: Single.
-   - CONST_ACTIVE_STD_DEDUCTION: ${std_ded:,.2f} (Tax Year 2026)
-   - CONST_ACTIVE_0PCT_LTCG_LIMIT: ${ltcg:,.2f} taxable income (Tax Year 2026).
-   - CONST_ACTIVE_MAX_GROSS_0PCT_LTCG: ${max_gross:,.2f} (${ltcg:,.0f} + ${std_ded:,.0f}).
-   - Target Horizon Age: Age 95 (Zero-Legacy Mandate).
-   - Primary Strategy: Zero-legacy drawdown. Maximize lifestyle capital usage
-     while staying within the 0% LTCG bracket headroom.
-
---------------------------------------------------------------------------------
-
-2. FIXED INCOME, CASH FLOW & MACRO TREND ACCUMULATORS
-   - VA Disability Benefit : $180.42 / month ($2,165.04 / year)
-     * Tax Status          : 100% TAX-EXEMPT (Excluded from Tax Ledger)
-   - Social Security       : $978.00 / month ($11,736.00 / year)
-     * Tax Status          : TAXABLE ORDINARY INCOME
-   - U.S. Navy Pension     : $404.58 / month ($4,854.96 / year)
-     * Tax Status          : TAXABLE ORDINARY INCOME
-
-   - CONST_GUARANTEED_ANNUAL_FLOOR: $18,756.00/year ($1,563.00/month).
-   - CONST_TAXABLE_FIXED_BASELINE : $16,590.96/year ($1,382.58/month).
-   - CONST_TARGET_LIFESTYLE_SPEND : $93,996.66/year ($7,833.06/month).
-   - CONST_TARGET_NET_DRAWDOWN_GAP: $77,405.70/year ($6,450.48/month).
-   - CONST_CRASH_FIXED_FLOOR      : $50,000.00/year (bare-bones baseline).
-   - CONST_CRASH_DRAWDOWN_GAP     : $31,244.00/year ($50k floor - $18,756 floor).
-   - CONST_OPERATIONAL_CASH_BUFFER: $85,000.00 (E*TRADE Savings ...1600).
-   - CONST_SAVINGS_TARGET         : $85,000.00 (Premium Savings ...1600 Target).
-   - CONST_SAVINGS_FLOOR          : $20,000.00 (Minimum Cash Tank Floor).
-   - Dynamic CPI Factor           : {cpi}% (Retrieved U.S. CPI Baseline)
-     
-   - CONST_PEAK_PORTFOLIO_NAV     : $1,733,426.88 (High-water mark tracker)
-   - CONST_BASELINE_DEPLETION_AGE : Age 95 (Baseline horizon anchor)
-   - CONST_3YR_CUMULATIVE_DRAWDOWN: $0.00 (Multi-year cumulative burn tracker)
-   - CONST_MIN_STATISTICAL_DAYS   : 90 (Cold-Start Proxy Threshold)
-
---------------------------------------------------------------------------------
-
-3. BUCKET 1 CASH & CD STRUCTURE (EXPLICIT LOCATION MAP)
-   - Operational Cash Buffer: $85,000.00 (Held in E*TRADE Savings ...1600)
-   - CD Bucket #1: $100,000.00 (Matures 10/17/2026) [EXTERNAL BANK - NOT IN CSV]
-   - CD Bucket #2: $100,000.00 (Matures 04/14/2027) [HELD IN E*TRADE - IN CSV]
-   - CD Bucket #3: $100,000.00 (Matures 05/05/2027) [HELD IN E*TRADE - IN CSV]
-   - CD Bucket #4: $100,000.00 (Matures 05/05/2027) [HELD IN E*TRADE - IN CSV]
-   - CD Bucket #5: $100,000.00 (Matures 05/05/2027) [HELD IN E*TRADE - IN CSV]
-
---------------------------------------------------------------------------------
-
-4. INGESTED EXPENSE PAYLOAD
-# [START COPY HERE]
-- CONST_STATIC_MONTHLY_BILLS:
-  * Pool_Service: [Amount: $150.00]
-  * Lawn_Service: [Amount: $230.00]
-  * Internet_Service: [Amount: $85.00]
-  * T-Mobile_Cellular: [Amount: $85.00]
-  * Spotify: [Amount: $15.00]
-  * OUC_Water: [Amount: $40.00]
-
-- CONST_VARIABLE_SPEND:
-  * Food: [Historical_Monthly_Average: $500.00]
-  * Garden_Purchases: [Historical_Monthly_Average: $120.50]
-  * Electronic_Equipment: [Historical_Monthly_Average: $850.00]
-  * Tolls: [Historical_Monthly_Average: $55.00]
-
-- CONST_NON_LINEAR_EXPENSES:
-  * Massey_Lawn_Two_Months: [Due_Month: 1] [Last_Paid_Amount: $85.00]
-
-- CONST_SEASONAL_MONTHLY_BILLS:
-  * Electric_Bill: [Jan: $338.41]
-# [END COPY HERE]
-================================================================================"""
+    content = old_const_text
+    
+    # Update Header Date and Version
+    content = re.sub(r'Date: \d{4}-\d{2}-\d{2} \(Version \d+\)', f'Date: {today} (Version {new_version})', content)
+    content = re.sub(r'File Name: GEM_Retirement_Master_Profile_Constants_\d{4}-\d{2}-\d{2}_v\d+\.txt', f'File Name: GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt', content)
+    
+    # Update Manifest
+    content = re.sub(r'GEM_Retirement_Master_Profile_Constants_\d{4}-\d{2}-\d{2}_v\d+\.txt', f'GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt', content)
+    content = re.sub(r'GEM_Retirement_Portfolio_Ledger_\d{4}-\d{2}-\d{2}_v\d+\.txt', f'GEM_Retirement_Portfolio_Ledger_{today}_v{new_ledger_version}.txt', content)
+    
+    # Update Tax Parameters
+    content = re.sub(r'(CONST_ACTIVE_STD_DEDUCTION:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${std_ded:,.2f}", content)
+    content = re.sub(r'(CONST_ACTIVE_0PCT_LTCG_LIMIT:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${ltcg:,.2f}", content)
+    content = re.sub(r'(CONST_ACTIVE_MAX_GROSS_0PCT_LTCG:\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${max_gross:,.2f}", content)
+    
+    # Update CPI
+    content = re.sub(r'(Dynamic CPI Factor\s+:\s+)[\d\.]+%', r'\g<1>' + f"{cpi}%", content)
+    
     filename = os.path.join(DIR_CORE_ACTIVE, f"GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt")
     with open(filename, "w", encoding="utf-8") as f:
         f.write(content)
@@ -608,17 +524,21 @@ def main():
         
         # Dynamically find latest Constants version
         old_const_path = None
+        old_const_text = ""
         const_files = glob.glob(os.path.join(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt"))
         if const_files:
             latest_const = sorted(const_files)[-1]
             old_const_path = latest_const
             const_match = re.search(r'_v(\d+)\.txt', latest_const)
             const_version = int(const_match.group(1)) if const_match else 0
+            with open(latest_const, 'r', encoding='utf-8') as f:
+                old_const_text = f.read()
         else:
-            const_version = 0
+            raise FileNotFoundError("FATAL: Core File 1 not found. Cannot perform state-preserving mutation.")
         
         # Execute Phase 4: File Generation
-        generate_master_constants(routing_data, current_version=const_version)
+        new_ledger_version = prev_state['ledger_version'] + 1
+        generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version)
         generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
         
         print("\n=== PHASE 4 COMPLETE ===")
