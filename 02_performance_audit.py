@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-12
-#Version: 1.6.0 (Holistic CIO Upgrade & Macro Search)
+#Version: 1.7.0 (Deterministic Proxies & Terminal UX Rendering)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.6.0"
+__version__ = "1.7.0"
 __date__ = "2026-09-12"
 
 import os
@@ -140,7 +140,7 @@ def map_tickers_to_buckets(ledger_text: str) -> dict:
 # ==============================================================================
 # PHASE 2: TRIAGE & MATERIALITY LOGIC
 # ==============================================================================
-def identify_audit_targets(taxable_holdings: dict, min_days: int, ticker_map: dict) -> list:
+def identify_audit_targets(taxable_holdings: dict, min_days: int, ticker_map: dict, active_symbols: list, lockouts: dict) -> list:
     targets = []
     current_date = datetime.now()
     for ticker, data in taxable_holdings.items():
@@ -176,10 +176,11 @@ def identify_audit_targets(taxable_holdings: dict, min_days: int, ticker_map: di
                 
         if is_target:
             t_info = ticker_map.get(ticker, {'Bucket': 'UNKNOWN', 'Account': 'UNKNOWN'})
+            safe_proxies = alu_utils.get_safe_proxies(ticker, active_symbols, lockouts)
             targets.append({
                 'Symbol': ticker, 'Bucket': t_info['Bucket'], 'Account': t_info['Account'],
                 'Cost_Basis': basis, 'Value': value, 'Unrealized_GL': gl_value,
-                'Unrealized_GL_Pct': gl_pct, 'Reason': reason
+                'Unrealized_GL_Pct': gl_pct, 'Reason': reason, 'Vetted_Proxies': safe_proxies
             })
 
     targets_sorted = sorted(targets, key=lambda x: x['Unrealized_GL'])
@@ -194,6 +195,7 @@ def print_triage_summary(targets: list):
     for t in targets:
         print(f"-> {t['Symbol']} | {t['Bucket']} ({t['Account']}) | {t['Reason']}")
         print(f"   Value: ${t['Value']:,.2f} | Basis: ${t['Cost_Basis']:,.2f} | G/L: ${t['Unrealized_GL']:,.2f} ({t['Unrealized_GL_Pct']*100:.2f}%)")
+        print(f"   Vetted Proxies: {t['Vetted_Proxies']}")
     print(f"{ANSI_CYAN}" + "="*60 + f"{ANSI_RESET}\n")
 
 # ==============================================================================
@@ -228,7 +230,6 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
        
     2. Target Tickers for Tax-Loss Harvesting: {target_tickers}
        - Find their current Expense Ratio, 1-year, and 3-year trailing returns.
-       - Identify 1 or 2 highly correlated proxy ETFs tracking a DIFFERENT index.
        
     3. User Ad-Hoc Inquiry: "{ad_hoc_query}"
        - If specific tickers are mentioned, search for their Expense Ratio, Yield, and 1-year return.
@@ -292,7 +293,7 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
     {tax_headroom}
     
     [FIDUCIARY MANDATE & GUARDRAILS]
-    1. Recommend Tax-Loss Harvesting proxies based STRICTLY on the live search data.
+    1. Recommend Tax-Loss Harvesting proxies strictly from the 'Vetted_Proxies' list provided in the Portfolio Math payload.
     2. You are STRICTLY FORBIDDEN from recommending any proxy that exists in the Lockouts OR the Currently Held Symbols list.
     3. ZERO HALLUCINATION: If the search data is insufficient to make a fiduciary-grade judgment, you MUST halt and explicitly inform the user that more data is required. Do not guess.
     
@@ -317,10 +318,10 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
     with open(proposal_filepath, "w", encoding="utf-8") as f:
         f.write(proposal_text)
         
-    print(f"\n{ANSI_GREEN}" + "="*60)
-    print(f" [SUCCESS] Initial Proposal saved to: {proposal_filepath}")
-    print("="*60 + f"{ANSI_RESET}")
-    print("Please open the file in VS Code to review the AI's recommendations.")
+    print(f"\n{ANSI_YELLOW}--- AI PROPOSAL / RESPONSE ---{ANSI_RESET}")
+    print(f"{proposal_text}")
+    print(f"{ANSI_YELLOW}------------------------------{ANSI_RESET}")
+    print(f"\n{ANSI_GREEN}[SUCCESS] Initial Proposal saved to: {proposal_filepath}{ANSI_RESET}")
     print("You can now ask follow-up questions, challenge the proxies, or ask for clarification.")
     print("Type 'accept', 'finalize', 'done', or 'exit' when you are satisfied to generate the final official file.")
     
@@ -342,6 +343,9 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
             with open(followup_filepath, "w", encoding="utf-8") as f:
                 f.write(reply.text)
                 
+            print(f"\n{ANSI_YELLOW}--- AI PROPOSAL / RESPONSE ---{ANSI_RESET}")
+            print(f"{reply.text}")
+            print(f"{ANSI_YELLOW}------------------------------{ANSI_RESET}")
             print(f"\n{ANSI_GREEN}[System] Response saved to: {followup_filepath}{ANSI_RESET}")
         except Exception as e:
             print(f"{ANSI_RED}[ERROR] Communication failed: {e}{ANSI_RESET}")
@@ -471,7 +475,7 @@ def main():
     
     active_symbols = list(set(df_brok['Symbol'].dropna().unique()) | set(df_ira['Symbol'].dropna().unique()))
     
-    targets = identify_audit_targets(taxable_holdings, min_days, ticker_map)
+    targets = identify_audit_targets(taxable_holdings, min_days, ticker_map, active_symbols, lockouts)
     print_triage_summary(targets)
     
     # 5. Pre-Flight & Search
