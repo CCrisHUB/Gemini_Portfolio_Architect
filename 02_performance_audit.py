@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-12
-#Version: 1.5.0 (Fiduciary Instructions Integration)
+#Version: 1.6.0 (Holistic CIO Upgrade & Macro Search)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __date__ = "2026-09-12"
 
 import os
@@ -223,11 +223,14 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
     You are a financial data retrieval engine. You have access to Google Search.
     Search for and return the LIVE current data for the following:
     
-    1. Target Tickers for Tax-Loss Harvesting: {target_tickers}
+    1. Macro-Economic Climate:
+       - Search for the current US market cycle, interest rate trends, and leading/lagging sectors to provide strategic context.
+       
+    2. Target Tickers for Tax-Loss Harvesting: {target_tickers}
        - Find their current Expense Ratio, 1-year, and 3-year trailing returns.
        - Identify 1 or 2 highly correlated proxy ETFs tracking a DIFFERENT index.
        
-    2. User Ad-Hoc Inquiry: "{ad_hoc_query}"
+    3. User Ad-Hoc Inquiry: "{ad_hoc_query}"
        - If specific tickers are mentioned, search for their Expense Ratio, Yield, and 1-year return.
        - If deploying cash is mentioned, search for current macro conditions (e.g., S&P 500 30-day trend).
        
@@ -359,7 +362,16 @@ def finalize_audit(chat_session):
     
     final_prompt = f"""
     The user has finalized the session. 
-    Generate the FINAL, official report incorporating all agreed-upon changes and advisory conclusions.
+    Generate the FINAL, official report. It MUST contain the following structured sections:
+    
+    ## 1. MACRO & MICRO STRATEGIC REVIEW
+    (Your holistic analysis of the entire portfolio's alignment with current market realities, risk ratios, and strategy decay).
+    
+    ## 2. TAX-LOSS HARVESTING & PROXY DIRECTIVES
+    (Your specific TLH recommendations).
+    
+    ## 3. AD-HOC INQUIRY RESOLUTION
+    (Answers to the user's specific questions).
     
     MANDATORY FORMATTING RULES:
     1. Output strictly formatted with soft word-boundary wrapping (max 80 columns).
@@ -464,7 +476,7 @@ def main():
     
     # 5. Pre-Flight & Search
     ad_hoc_query = get_ad_hoc_inquiry()
-    search_data = gather_live_macro_data(client, targets, ad_hoc_query) if (targets or ad_hoc_query) else "No search required."
+    search_data = gather_live_macro_data(client, targets, ad_hoc_query)
     
     # 6. LLM Integration
     custom_instructions = load_file_content(instructions_file)
