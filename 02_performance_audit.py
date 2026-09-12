@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-12
-#Version: 1.3.0 (Fiduciary Guardrails & Active Symbol Overlap Patch)
+#Version: 1.4.0 (Deterministic Bucket Mapping & Tax Headroom Patch)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 __date__ = "2026-09-12"
 
 import os
@@ -119,10 +119,28 @@ def extract_min_statistical_days(constants_text: str) -> int:
     print(f"{ANSI_YELLOW}[WARNING] CONST_MIN_STATISTICAL_DAYS not found in Core File 1. Defaulting to 90.{ANSI_RESET}")
     return 90
 
+def extract_tax_headroom(ledger_text: str) -> str:
+    match = re.search(r'Remaining 0% LTCG Headroom:\s+\$([\d,]+\.\d{2})', ledger_text)
+    return f"${match.group(1)}" if match else "UNKNOWN"
+
+def map_tickers_to_buckets(ledger_text: str) -> dict:
+    mapping = {}
+    current_bucket = "UNKNOWN"
+    current_account = "UNKNOWN"
+    for line in ledger_text.split('\n'):
+        if line.startswith('[BUCKET'):
+            current_bucket = line.strip()
+        elif '- Account:' in line:
+            current_account = line.split('Account:')[1].strip()
+        elif line.strip().startswith('*') and ':' in line and 'shares' in line:
+            ticker = line.strip().split('*')[1].split(':')[0].strip()
+            mapping[ticker] = {'Bucket': current_bucket, 'Account': current_account}
+    return mapping
+
 # ==============================================================================
 # PHASE 2: TRIAGE & MATERIALITY LOGIC
 # ==============================================================================
-def identify_audit_targets(taxable_holdings: dict, min_days: int) -> list:
+def identify_audit_targets(taxable_holdings: dict, min_days: int, ticker_map: dict) -> list:
     targets = []
     current_date = datetime.now()
     for ticker, data in taxable_holdings.items():
@@ -157,9 +175,11 @@ def identify_audit_targets(taxable_holdings: dict, min_days: int) -> list:
                 is_target, reason = True, f"MATERIAL LOSS PCT (>{abs_loss_pct*100:.2f}%)"
                 
         if is_target:
+            t_info = ticker_map.get(ticker, {'Bucket': 'UNKNOWN', 'Account': 'UNKNOWN'})
             targets.append({
-                'Symbol': ticker, 'Account_Type': 'TAXABLE', 'Cost_Basis': basis,
-                'Value': value, 'Unrealized_GL': gl_value, 'Unrealized_GL_Pct': gl_pct, 'Reason': reason
+                'Symbol': ticker, 'Bucket': t_info['Bucket'], 'Account': t_info['Account'],
+                'Cost_Basis': basis, 'Value': value, 'Unrealized_GL': gl_value,
+                'Unrealized_GL_Pct': gl_pct, 'Reason': reason
             })
 
     targets_sorted = sorted(targets, key=lambda x: x['Unrealized_GL'])
@@ -172,7 +192,7 @@ def print_triage_summary(targets: list):
     if not targets:
         print(f"{ANSI_YELLOW}[System] No positions meet the materiality threshold for harvesting.{ANSI_RESET}")
     for t in targets:
-        print(f"-> {t['Symbol']} | {t['Reason']}")
+        print(f"-> {t['Symbol']} | {t['Bucket']} ({t['Account']}) | {t['Reason']}")
         print(f"   Value: ${t['Value']:,.2f} | Basis: ${t['Cost_Basis']:,.2f} | G/L: ${t['Unrealized_GL']:,.2f} ({t['Unrealized_GL_Pct']*100:.2f}%)")
     print(f"{ANSI_CYAN}" + "="*60 + f"{ANSI_RESET}\n")
 
@@ -231,7 +251,7 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
 # ==============================================================================
 # PHASE 4: LLM INTEGRATION & INTERACTIVE CHAT LOOP
 # ==============================================================================
-def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, active_symbols: list, custom_instructions: str, ledger_text: str):
+def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, active_symbols: list, tax_headroom: str, custom_instructions: str, ledger_text: str):
     print(f"\n{ANSI_CYAN}[System] Initializing {LLM_MODEL_NAME} (Thinking Level: High)...{ANSI_RESET}")
     
     chat_session = client.chats.create(
@@ -264,6 +284,9 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
     
     6. User Ad-Hoc Inquiry:
     "{ad_hoc_query}"
+    
+    7. Remaining 0% LTCG Tax Headroom:
+    {tax_headroom}
     
     [FIDUCIARY MANDATE & GUARDRAILS]
     1. Recommend Tax-Loss Harvesting proxies based STRICTLY on the live search data.
@@ -421,11 +444,13 @@ def main():
             user_input = input(f"{ANSI_CYAN}Place them in the folder and press ENTER to retry (or type 'exit'): {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
 
-    # 3. Extract Lockouts & Constants
+    # 3. Extract Lockouts, Constants, and Mappings
     ledger_text = load_file_content(ledger_file)
     constants_text = load_file_content(constants_file)
     lockouts = extract_wash_sale_lockouts(ledger_text)
     min_days = extract_min_statistical_days(constants_text)
+    tax_headroom = extract_tax_headroom(ledger_text)
+    ticker_map = map_tickers_to_buckets(ledger_text)
     
     # 4. Process CSVs & Triage via ALU Module
     df_brok = alu_utils.load_and_clean_csv(brokerage_csv)
@@ -434,7 +459,7 @@ def main():
     
     active_symbols = list(set(df_brok['Symbol'].dropna().unique()) | set(df_ira['Symbol'].dropna().unique()))
     
-    targets = identify_audit_targets(taxable_holdings, min_days)
+    targets = identify_audit_targets(taxable_holdings, min_days, ticker_map)
     print_triage_summary(targets)
     
     # 5. Pre-Flight & Search
@@ -452,6 +477,7 @@ def main():
         ad_hoc_query=ad_hoc_query,
         lockouts=lockouts,
         active_symbols=active_symbols,
+        tax_headroom=tax_headroom,
         custom_instructions=custom_instructions,
         ledger_text=ledger_text
     )
