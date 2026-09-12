@@ -1,12 +1,12 @@
 #02_performance_audit.py
 #"""
 #Fund Performance & Structural Audit Engine
-#Date: 2026-09-11
-#Version: 1.1.3 (Macro State Context Injection Patch)
+#Date: 2026-09-12
+#Version: 1.2.0 (Cold-Start Gate & Core File 1 Integration)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.1.3"
-__date__ = "2026-09-11"
+__version__ = "1.2.0"
+__date__ = "2026-09-12"
 
 import os
 import sys
@@ -112,24 +112,43 @@ def extract_wash_sale_lockouts(ledger_text: str) -> dict:
             print(f"{ANSI_YELLOW}[WARNING] Failed to parse wash-sale lockouts: {e}{ANSI_RESET}")
     return lockouts
 
+def extract_min_statistical_days(constants_text: str) -> int:
+    match = re.search(r'CONST_MIN_STATISTICAL_DAYS\s*:\s*(\d+)', constants_text)
+    if match:
+        return int(match.group(1))
+    print(f"{ANSI_YELLOW}[WARNING] CONST_MIN_STATISTICAL_DAYS not found in Core File 1. Defaulting to 90.{ANSI_RESET}")
+    return 90
+
 # ==============================================================================
 # PHASE 2: TRIAGE & MATERIALITY LOGIC
 # ==============================================================================
-def identify_audit_targets(taxable_holdings: dict) -> list:
+def identify_audit_targets(taxable_holdings: dict, min_days: int) -> list:
     targets = []
+    current_date = datetime.now()
     for ticker, data in taxable_holdings.items():
         gl_value = data['Total Gain $']
         basis = data['Basis $']
         value = data['Value $']
+        acq_date_str = data.get('Date Acquired', '')
         
         # Prevent division by zero
         gl_pct = gl_value / basis if basis > 0 else 0.0
         
         is_target, reason = False, ""
         
+        # Cold-Start Gate
+        is_cold_start = False
+        if acq_date_str and str(acq_date_str).lower() != 'various':
+            try:
+                acq_date = datetime.strptime(str(acq_date_str).strip(), '%m/%d/%Y')
+                if (current_date - acq_date).days < min_days:
+                    is_cold_start = True
+            except ValueError:
+                pass
+        
         if ticker in YIELD_TRAPS:
             is_target, reason = True, "STRUCTURAL YIELD TRAP"
-        elif gl_value < 0:
+        elif gl_value < 0 and not is_cold_start:
             abs_loss = abs(gl_value)
             abs_loss_pct = abs(gl_pct)
             if abs_loss > 1000.00:
@@ -367,14 +386,16 @@ def main():
     # 1. Locate Core Files
     while True:
         try:
+            constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
             ledger_file = get_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
             instructions_file = get_latest_file(CORE_DIR, "GEM_Retirement_and_Portfolio_Architect_Custom_Instructions_*.txt")
+            print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(constants_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ledger_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(instructions_file)}{ANSI_RESET}")
             break
-        except FileNotFoundError:
+        except FileNotFoundError as e:
             print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{CORE_DIR}'.{ANSI_RESET}")
-            print(f"{ANSI_YELLOW}Please ensure both the Portfolio Ledger and Custom Instructions are present.{ANSI_RESET}")
+            print(f"{ANSI_YELLOW}{e}{ANSI_RESET}")
             user_input = input(f"{ANSI_CYAN}Press ENTER to retry, or type 'exit' to quit: {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
 
@@ -395,16 +416,18 @@ def main():
             user_input = input(f"{ANSI_CYAN}Place them in the folder and press ENTER to retry (or type 'exit'): {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
 
-    # 3. Extract Lockouts
+    # 3. Extract Lockouts & Constants
     ledger_text = load_file_content(ledger_file)
+    constants_text = load_file_content(constants_file)
     lockouts = extract_wash_sale_lockouts(ledger_text)
+    min_days = extract_min_statistical_days(constants_text)
     
     # 4. Process CSVs & Triage via ALU Module
     df_brok = alu_utils.load_and_clean_csv(brokerage_csv)
     df_ira = alu_utils.load_and_clean_csv(ira_csv)
     taxable_holdings, _ = alu_utils.disaggregate_holdings(df_brok, df_ira)
     
-    targets = identify_audit_targets(taxable_holdings)
+    targets = identify_audit_targets(taxable_holdings, min_days)
     print_triage_summary(targets)
     
     # 5. Pre-Flight & Search
