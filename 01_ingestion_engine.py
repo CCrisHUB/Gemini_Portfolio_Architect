@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.2.6 (Hardened Regex & Centralized NAV Math)
+#Version: 2.2.7 (Graceful Degradation & ANSI UX)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.6"
+__version__ = "2.2.7"
 __date__ = "2026-09-12"
 
 import os
@@ -526,8 +526,8 @@ def main():
                 print(f"✅ Detected: {os.path.basename(ira_csv)}")
                 break
             except FileNotFoundError:
-                print(f"\n❌ ERROR: I did not detect the required CSV files in the '{DIR_CSV_ACTIVE}' folder.")
-                print("Please make sure the files are in the folder and try again.\n")
+                print(f"\n\033[91m[ERROR] I did not detect the required CSV files in '{DIR_CSV_ACTIVE}'.\033[0m")
+                print("\033[96mPlease make sure the files are in the folder and try again.\033[0m\n")
                 
         print("\n" + "-" * 80)
         print("STEP 2: METADATA OVERRIDES")
@@ -547,9 +547,16 @@ def main():
         print("STEP 3: DELTA CHECK (SOLD / BOUGHT TICKERS)")
         print("-" * 80)
         
-        # Extract previous state FIRST to get old tickers
-        prev_state = parse_previous_ledger(DIR_CORE_ACTIVE)
-        old_ledger_path = prev_state['file_path']
+        # Extract previous state FIRST to get old tickers (Graceful Degradation Loop)
+        while True:
+            try:
+                prev_state = parse_previous_ledger(DIR_CORE_ACTIVE)
+                old_ledger_path = prev_state['file_path']
+                break
+            except FileNotFoundError as e:
+                print(f"\n\033[91m[ERROR] {e}\033[0m")
+                input("\033[96mPlace the previous Portfolio Ledger in 00_CORE_Files and press ENTER to retry...\033[0m")
+                
         prev_state['ticker_map'].update(metadata_overrides)
         
         df_brokerage = alu_utils.load_and_clean_csv(brokerage_csv)
@@ -588,10 +595,10 @@ def main():
                         print(f"  - {os.path.basename(gf)}")
                     break
                 else:
-                    print("\n❌ WARNING: Realized Gains CSV(s) NOT FOUND.")
-                    print("Please download your Realized Gains & Losses CSV(s).")
-                    print("Naming convention: Must start with 'RealizedGains' (e.g., RealizedGains_XXXX.csv).")
-                    input(f"Place them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...")
+                    print("\n\033[91m[WARNING] Realized Gains CSV(s) NOT FOUND.\033[0m")
+                    print("\033[96mPlease download your Realized Gains & Losses CSV(s).\033[0m")
+                    print("\033[96mNaming convention: Must start with 'RealizedGains' (e.g., RealizedGains_XXXX.csv).\033[0m")
+                    input(f"\033[96mPlace them in the '{DIR_CSV_ACTIVE}' folder and press ENTER to continue...\033[0m")
                     
         print("\n[DELTA CHECK COMPLETE: No Missing Info.] Proceeding to Data Processing...\n")
         
@@ -612,19 +619,22 @@ def main():
         # Execute Tax Engine (Now with API Truth)
         prev_state['tax_ledger'] = process_tax_and_wash_sales(prev_state['tax_ledger'], gains_files, sold_tickers, routing_data)
         
-        # Dynamically find latest Constants version
+        # Dynamically find latest Constants version (Graceful Degradation Loop)
         old_const_path = None
         old_const_text = ""
-        const_files = glob.glob(os.path.join(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt"))
-        if const_files:
-            latest_const = sorted(const_files)[-1]
-            old_const_path = latest_const
-            const_match = re.search(r'_v(\d+)\.txt', latest_const)
-            const_version = int(const_match.group(1)) if const_match else 0
-            with open(latest_const, 'r', encoding='utf-8') as f:
-                old_const_text = f.read()
-        else:
-            raise FileNotFoundError("FATAL: Core File 1 not found. Cannot perform state-preserving mutation.")
+        while True:
+            const_files = glob.glob(os.path.join(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt"))
+            if const_files:
+                latest_const = sorted(const_files)[-1]
+                old_const_path = latest_const
+                const_match = re.search(r'_v(\d+)\.txt', latest_const)
+                const_version = int(const_match.group(1)) if const_match else 0
+                with open(latest_const, 'r', encoding='utf-8') as f:
+                    old_const_text = f.read()
+                break
+            else:
+                print(f"\n\033[91m[ERROR] Core File 1 (Master Constants) not found in '{DIR_CORE_ACTIVE}'.\033[0m")
+                input("\033[96mPlace the previous Master Constants in 00_CORE_Files and press ENTER to retry...\033[0m")
         
         # Execute Phase 4: File Generation
         new_ledger_version = prev_state['ledger_version'] + 1
