@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.2.3 (Liability Parsing & Net Variance Fix)
+#Version: 2.2.4 (Zero-Legacy Horizon Math Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.3"
+__version__ = "2.2.4"
 __date__ = "2026-09-12"
 
 import os
@@ -244,6 +244,22 @@ def update_pacing_engine(pacing_text, const_text):
         pacing_text = re.sub(r'(Net Adjusted Pacing Variance:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + net_var_str, pacing_text)
     return pacing_text
 
+def calculate_zero_legacy_drawdown(combined_capital, const_text):
+    today = datetime.now()
+    dob_match = re.search(r'Date of Birth:\s+[A-Za-z]+\s+\d{1,2},\s+(\d{4})', const_text)
+    horizon_match = re.search(r'Target Horizon Age:\s+Age\s+(\d+)', const_text)
+    fixed_floor_match = re.search(r'CONST_GUARANTEED_ANNUAL_FLOOR:\s+\$?([\d,]+\.\d{2})', const_text)
+    if not (dob_match and horizon_match and fixed_floor_match): return None, None
+    birth_year = int(dob_match.group(1))
+    horizon_age = int(horizon_match.group(1))
+    fixed_floor = float(fixed_floor_match.group(1).replace(',', ''))
+    current_age = today.year - birth_year
+    years_remaining = horizon_age - current_age
+    if years_remaining <= 0: years_remaining = 1
+    target_net_drawdown = combined_capital / years_remaining
+    target_lifestyle_spend = target_net_drawdown + fixed_floor
+    return target_lifestyle_spend, target_net_drawdown
+
 def query_strategic_routing(telemetry_payload):
     print("System: Querying Neuro-Symbolic API for Strategic Routing (Live Web Search Enabled)...")
     load_dotenv()
@@ -288,7 +304,7 @@ def query_strategic_routing(telemetry_payload):
     except Exception as e:
         raise RuntimeError(f"API Boundary Failure: {e}")
 
-def generate_master_constants(old_const_text, routing_data, current_version, new_ledger_version):
+def generate_master_constants(old_const_text, routing_data, current_version, new_ledger_version, combined_capital):
     print("System: Generating Core File 1 (Master Constants)...")
     new_version = current_version + 1
     today = datetime.now().strftime("%Y-%m-%d")
@@ -315,6 +331,12 @@ def generate_master_constants(old_const_text, routing_data, current_version, new
     
     # Update CPI
     content = re.sub(r'(Dynamic CPI Factor\s+:\s+)[\d\.]+%', r'\g<1>' + f"{cpi}%", content)
+    
+    # Update Zero-Legacy Drawdown
+    target_spend, target_drawdown = calculate_zero_legacy_drawdown(combined_capital, content)
+    if target_spend and target_drawdown:
+        content = re.sub(r'(CONST_TARGET_LIFESTYLE_SPEND\s+:\s+)\$[\d,]+\.\d{2}/year \(\$[\d,]+\.\d{2}/month\)', r'\g<1>' + f"${target_spend:,.2f}/year (${(target_spend/12):,.2f}/month)", content)
+        content = re.sub(r'(CONST_TARGET_NET_DRAWDOWN_GAP:\s+)\$[\d,]+\.\d{2}/year \(\$[\d,]+\.\d{2}/month\)', r'\g<1>' + f"${target_drawdown:,.2f}/year (${(target_drawdown/12):,.2f}/month)", content)
     
     filename = os.path.join(DIR_CORE_ACTIVE, f"GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt")
     with open(filename, "w", encoding="utf-8") as f:
@@ -585,7 +607,9 @@ def main():
         # Execute Phase 4: File Generation
         new_ledger_version = prev_state['ledger_version'] + 1
         prev_state['pacing_engine'] = update_pacing_engine(prev_state['pacing_engine'], old_const_text)
-        generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version)
+        
+        combined_capital = total_executed_equities + prev_state.get('total_platform_cash', 0.0) + prev_state['ext_cds']
+        generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version, combined_capital)
         generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
         
         print("\n=== PHASE 4 COMPLETE ===")
