@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.2.2 (Date-Aware Pacing Engine Fix)
+#Version: 2.2.3 (Liability Parsing & Net Variance Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.2.2"
+__version__ = "2.2.3"
 __date__ = "2026-09-12"
 
 import os
@@ -198,7 +198,29 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
     
     return tax_ledger_text
 
-def update_pacing_engine(pacing_text):
+def calculate_pending_liabilities(const_text):
+    today = datetime.now()
+    current_month = today.month
+    months_remaining = 12 - current_month + 1
+    liabilities = 0.0
+    payload_match = re.search(r'4\. INGESTED EXPENSE PAYLOAD\n# \[START COPY HERE\](.*?)# \[END COPY HERE\]', const_text, re.DOTALL)
+    if not payload_match: return 0.0
+    payload = payload_match.group(1)
+    monthly_items = re.findall(r'\[(?:Amount|Historical_Monthly_Average):\s*\$([\d,]+\.\d{2})\]', payload)
+    for val in monthly_items:
+        liabilities += float(val.replace(',', '')) * months_remaining
+    non_linear_items = re.findall(r'\[Due_Month:\s*(\d+)\]\s*\[Last_Paid_Amount:\s*\$([\d,]+\.\d{2})\]', payload)
+    for month_str, val_str in non_linear_items:
+        if int(month_str) >= current_month:
+            liabilities += float(val_str.replace(',', ''))
+    month_map = {'Jan':1, 'Feb':2, 'Mar':3, 'Apr':4, 'May':5, 'Jun':6, 'Jul':7, 'Aug':8, 'Sep':9, 'Oct':10, 'Nov':11, 'Dec':12}
+    seasonal_items = re.findall(r'\[([A-Z][a-z]{2}):\s*\$([\d,]+\.\d{2})\]', payload)
+    for m_str, val_str in seasonal_items:
+        if month_map.get(m_str, 0) >= current_month:
+            liabilities += float(val_str.replace(',', ''))
+    return liabilities
+
+def update_pacing_engine(pacing_text, const_text):
     today = datetime.now()
     today_str = today.strftime("%Y-%m-%d")
     pacing_text = re.sub(r'Current Date:\s+\d{4}-\d{2}-\d{2}', f'Current Date: {today_str}', pacing_text)
@@ -212,8 +234,14 @@ def update_pacing_engine(pacing_text):
     actual_drawdown = float(actual_match.group(1).replace(',', '')) if actual_match else 0.0
     gross_variance = actual_drawdown - paced_target
     variance_str = f"-${abs(gross_variance):,.2f} (Under paced target)" if gross_variance < 0 else f"+${gross_variance:,.2f} (Over paced target)"
+    pending_liabilities = calculate_pending_liabilities(const_text)
+    net_variance = gross_variance + pending_liabilities
+    net_var_str = f"-${abs(net_variance):,.2f}" if net_variance < 0 else f"+${net_variance:,.2f}"
     pacing_text = re.sub(r'(Total A \(Paced YTD Target\):\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${paced_target:,.2f}", pacing_text)
     pacing_text = re.sub(r'(Pacing Variance \(Gross\):\s+)[+-]?\$[\d,]+\.\d{2}.*?(?=\n)', r'\g<1>' + variance_str, pacing_text)
+    if re.search(r'Pending Fixed Liabilities', pacing_text):
+        pacing_text = re.sub(r'(Pending Fixed Liabilities \(YTD Remaining\):\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${pending_liabilities:,.2f}", pacing_text)
+        pacing_text = re.sub(r'(Net Adjusted Pacing Variance:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + net_var_str, pacing_text)
     return pacing_text
 
 def query_strategic_routing(telemetry_payload):
@@ -556,7 +584,7 @@ def main():
         
         # Execute Phase 4: File Generation
         new_ledger_version = prev_state['ledger_version'] + 1
-        prev_state['pacing_engine'] = update_pacing_engine(prev_state['pacing_engine'])
+        prev_state['pacing_engine'] = update_pacing_engine(prev_state['pacing_engine'], old_const_text)
         generate_master_constants(old_const_text, routing_data, const_version, new_ledger_version)
         generate_portfolio_ledger(taxable, ira, routing_data, prev_state, current_version=prev_state['ledger_version'])
         
