@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-12
-#Version: 1.2.0 (Cold-Start Gate & Core File 1 Integration)
+#Version: 1.3.0 (Fiduciary Guardrails & Active Symbol Overlap Patch)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __date__ = "2026-09-12"
 
 import os
@@ -195,6 +195,7 @@ def get_ad_hoc_inquiry() -> str:
 
 def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
     print(f"{ANSI_CYAN}[System] Initiating Live Web Search via Gemini API...{ANSI_RESET}")
+    print(f"{ANSI_YELLOW}[API DISCLOSURE] Model: {LLM_MODEL_NAME} | Tool: Google Search | Thinking: High{ANSI_RESET}")
     
     target_tickers = [t['Symbol'] for t in targets]
     
@@ -230,7 +231,7 @@ def gather_live_macro_data(client, targets: list, ad_hoc_query: str) -> str:
 # ==============================================================================
 # PHASE 4: LLM INTEGRATION & INTERACTIVE CHAT LOOP
 # ==============================================================================
-def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, custom_instructions: str, ledger_text: str):
+def generate_and_review_proposal(client, portfolio_data: str, search_data: str, ad_hoc_query: str, lockouts: dict, active_symbols: list, custom_instructions: str, ledger_text: str):
     print(f"\n{ANSI_CYAN}[System] Initializing {LLM_MODEL_NAME} (Thinking Level: High)...{ANSI_RESET}")
     
     chat_session = client.chats.create(
@@ -255,15 +256,19 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
     3. Active Wash-Sale Lockouts (DO NOT RECOMMEND THESE AS PROXIES):
     {lockouts}
     
-    4. Live Macro & Search Data (Retrieved via Web Search):
+    4. Currently Held Portfolio Symbols (DO NOT RECOMMEND THESE AS PROXIES):
+    {active_symbols}
+    
+    5. Live Macro & Search Data:
     {search_data}
     
-    5. User Ad-Hoc Inquiry:
+    6. User Ad-Hoc Inquiry:
     "{ad_hoc_query}"
     
-    [MANDATE]
-    Analyze the targets. Recommend Tax-Loss Harvesting proxies based strictly on the live search data. 
-    Ensure no wash-sale overlap. Answer the user's ad-hoc inquiry with mathematical justification.
+    [FIDUCIARY MANDATE & GUARDRAILS]
+    1. Recommend Tax-Loss Harvesting proxies based STRICTLY on the live search data.
+    2. You are STRICTLY FORBIDDEN from recommending any proxy that exists in the Lockouts OR the Currently Held Symbols list.
+    3. ZERO HALLUCINATION: If the search data is insufficient to make a fiduciary-grade judgment, you MUST halt and explicitly inform the user that more data is required. Do not guess.
     
     Output the entire response strictly formatted as an 80-character line-wrapped Markdown text block.
     Do not include conversational filler outside the markdown block.
@@ -427,6 +432,8 @@ def main():
     df_ira = alu_utils.load_and_clean_csv(ira_csv)
     taxable_holdings, _ = alu_utils.disaggregate_holdings(df_brok, df_ira)
     
+    active_symbols = list(set(df_brok['Symbol'].dropna().unique()) | set(df_ira['Symbol'].dropna().unique()))
+    
     targets = identify_audit_targets(taxable_holdings, min_days)
     print_triage_summary(targets)
     
@@ -444,6 +451,7 @@ def main():
         search_data=search_data,
         ad_hoc_query=ad_hoc_query,
         lockouts=lockouts,
+        active_symbols=active_symbols,
         custom_instructions=custom_instructions,
         ledger_text=ledger_text
     )
