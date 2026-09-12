@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-12
-#Version: 2.3.1 (Cosmetic Schema Alignment)
+#Version: 2.3.2 (Pacing Engine Polarity Fix)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.1"
+__version__ = "2.3.2"
 __date__ = "2026-09-12"
 
 import os
@@ -243,16 +243,18 @@ def update_pacing_engine(pacing_text, const_text, new_target_gap=None):
     paced_target = annual_gap * (day_of_year / days_in_year)
     actual_match = re.search(r'Total B \(Actual YTD Drawdown\):\s+\$?([\d,]+\.\d{2})', pacing_text)
     actual_drawdown = float(actual_match.group(1).replace(',', '')) if actual_match else 0.0
-    gross_variance = actual_drawdown - paced_target
-    variance_str = f"-${abs(gross_variance):,.2f} (Under paced target)" if gross_variance < 0 else f"+${gross_variance:,.2f} (Over paced target)"
+    
+    gross_variance = paced_target - actual_drawdown
+    variance_str = f"+${gross_variance:,.2f} (Under paced target)" if gross_variance >= 0 else f"-${abs(gross_variance):,.2f} (Over paced target)"
     pending_liabilities = calculate_pending_liabilities(const_text)
-    net_variance = gross_variance + pending_liabilities
-    net_var_str = f"-${abs(net_variance):,.2f}" if net_variance < 0 else f"+${net_variance:,.2f}"
+    net_variance = gross_variance - pending_liabilities
+    net_var_str = f"+${net_variance:,.2f} (Surplus)" if net_variance >= 0 else f"-${abs(net_variance):,.2f} (Deficit)"
+    
     pacing_text = re.sub(r'(Total A \(Paced YTD Target\):\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${paced_target:,.2f}", pacing_text)
     pacing_text = re.sub(r'(Pacing Variance \(Gross\):\s+)[+-]?\$[\d,]+\.\d{2}.*?(?=\n)', r'\g<1>' + variance_str, pacing_text)
     if re.search(r'Pending Fixed Liabilities', pacing_text):
         pacing_text = re.sub(r'(Pending Fixed Liabilities \(YTD Remaining\):\s+)\$[\d,]+\.\d{2}', r'\g<1>' + f"${pending_liabilities:,.2f}", pacing_text)
-        pacing_text = re.sub(r'(Net Adjusted Pacing Variance:\s+)[+-]?\$[\d,]+\.\d{2}', r'\g<1>' + net_var_str, pacing_text)
+        pacing_text = re.sub(r'(Net Adjusted Pacing Variance:\s+)[+-]?\$[\d,]+\.\d{2}.*?(?=\n|$)', r'\g<1>' + net_var_str, pacing_text)
     return pacing_text
 
 def calculate_zero_legacy_drawdown(combined_capital, const_text):
