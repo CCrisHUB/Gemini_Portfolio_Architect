@@ -172,14 +172,21 @@ def disaggregate_holdings(df_all, df_ira):
 import re
 
 def extract_constants_data(constants_text: str) -> dict:
-    """Extracts tax limits and pacing parameters from the Master Constants file."""
-    data = {'ltcg_limit': 0.0, 'std_deduction': 0.0, 'annual_drawdown_gap': 0.0}
+    """Extracts tax limits, pacing parameters, and statistical thresholds from the Master Constants file."""
+    data = {'ltcg_limit': 0.0, 'std_deduction': 0.0, 'annual_drawdown_gap': 0.0, 'min_statistical_days': 90}
+    
     match_ltcg = re.search(r'CONST_ACTIVE_0PCT_LTCG_LIMIT:\s*\$?([\d,]+\.\d{2})', constants_text)
     if match_ltcg: data['ltcg_limit'] = float(match_ltcg.group(1).replace(',', ''))
+    
     match_std = re.search(r'CONST_ACTIVE_STD_DEDUCTION:\s*\$?([\d,]+\.\d{2})', constants_text)
     if match_std: data['std_deduction'] = float(match_std.group(1).replace(',', ''))
+    
     match_gap = re.search(r'CONST_TARGET_NET_DRAWDOWN_GAP:\s*\$?([\d,]+\.\d{2})', constants_text)
     if match_gap: data['annual_drawdown_gap'] = float(match_gap.group(1).replace(',', ''))
+    
+    match_days = re.search(r'CONST_MIN_STATISTICAL_DAYS\s*:\s*(\d+)', constants_text)
+    if match_days: data['min_statistical_days'] = int(match_days.group(1))
+        
     return data
 
 def extract_ledger_portfolio(ledger_text: str) -> dict:
@@ -344,3 +351,90 @@ def update_ledger_text(ledger_text: str, liquidations: list, total_withdrawal: f
     new_text = deduct_macro(r'(COMBINED TOTAL SYSTEM CAPITAL:\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
 
     return new_text, new_variance, new_headroom
+
+# ==============================================================================
+# AVENUE C: TREND & PACING ALU FUNCTIONS
+# ==============================================================================
+from datetime import datetime
+
+def extract_trend_metrics(ledger_text: str) -> dict:
+    """Parses the ledger specifically for macro trend and pacing variance data."""
+    data = {
+        'market_status': 'UNKNOWN',
+        'total_executed_equities': 0.0,
+        'pacing_variance_value': 0.0,
+        'milestones': []
+    }
+    
+    match_status = re.search(r'Active Market Status Designation:\s*\[(.*?)\]', ledger_text)
+    if match_status:
+        data['market_status'] = match_status.group(1).strip()
+        
+    match_executed = re.search(r'Total Executed Holdings Market Value.*?\:\s*\$?([\d,]+\.\d{2})', ledger_text)
+    if match_executed:
+        data['total_executed_equities'] = float(match_executed.group(1).replace(',', ''))
+        
+    match_variance = re.search(r'Net Adjusted Pacing Variance:\s*([+-]?)\$?([+-]?[\d,]+\.\d{2})', ledger_text)
+    if match_variance:
+        sign = match_variance.group(1)
+        val_str = match_variance.group(2)
+        multiplier = -1.0 if val_str.startswith('-') or sign == '-' else 1.0
+        data['pacing_variance_value'] = float(val_str.replace('-', '').replace('+', '').replace(',', '')) * multiplier
+
+    milestone_block_match = re.search(r'ROLLING HISTORICAL MILESTONE LEDGER.*?\n(.*?)(?:={80}|\Z)', ledger_text, re.DOTALL)
+    if milestone_block_match:
+        milestone_block = milestone_block_match.group(1)
+        pattern = r'\[(\d{4}-\d{2}-\d{2})\s*\|.*?\s*\$?[\d,]+\.\d{2}\s*\|\s*\$?([\d,]+\.\d{2})\s*\|'
+        matches = re.findall(pattern, milestone_block)
+        for date_str, eq_str in matches:
+            data['milestones'].append({
+                'date': datetime.strptime(date_str, "%Y-%m-%d"),
+                'executed_equities': float(eq_str.replace(',', ''))
+            })
+            
+    data['milestones'] = sorted(data['milestones'], key=lambda x: x['date'])
+    return data
+
+def calculate_temporal_yield(ledger_data: dict, min_days: int) -> dict:
+    """Calculates the exact portfolio yield percentage and evaluates cold-start logic."""
+    yield_data = {
+        'delta_days': 0,
+        'is_cold_start': True,
+        'portfolio_yield_pct': 0.0,
+        'oldest_date_str': '',
+        'current_date_str': datetime.now().strftime("%Y-%m-%d")
+    }
+    
+    if not ledger_data['milestones']:
+        return yield_data
+        
+    oldest_node = ledger_data['milestones'][0]
+    current_val = ledger_data['total_executed_equities']
+    oldest_val = oldest_node['executed_equities']
+    
+    current_date = datetime.now()
+    delta = current_date - oldest_node['date']
+    yield_data['delta_days'] = delta.days
+    yield_data['oldest_date_str'] = oldest_node['date'].strftime("%Y-%m-%d")
+    
+    if yield_data['delta_days'] >= min_days:
+        yield_data['is_cold_start'] = False
+        if oldest_val > 0:
+            yield_data['portfolio_yield_pct'] = ((current_val - oldest_val) / oldest_val) * 100.0
+            
+    return yield_data
+
+def evaluate_spending_variance(variance: float) -> str:
+    """Evaluates pacing variance and returns the strict deterministic directive."""
+    if variance <= -5000.00:
+        return (f"Deficit: -${abs(variance):,.2f}. "
+                "DIRECTIVE (Condition 2.A): You are overspending against your YTD target and pending liabilities. "
+                "Delay major discretionary purchases or expensive travel.")
+    elif variance >= 5000.00:
+        return (f"Surplus: +${variance:,.2f}. "
+                "DIRECTIVE (Condition 2.B): You are underspending. You have a verified budget surplus "
+                "and can afford to make a major discretionary purchase or book a trip.")
+    else:
+        status = f"+${variance:,.2f}" if variance >= 0 else f"-${abs(variance):,.2f}"
+        return (f"Neutral: {status}. "
+                "DIRECTIVE (Condition 2.C): Your spending is precisely on target. Keep spending at the current pace.")

@@ -2,10 +2,10 @@
 #"""
 #Trend Tracking & Financial Pacing Engine
 #Date: 2026-09-15
-#Version: 1.0.0 
+#Version: 1.1.0 (ALU Refactor & UX Transparency Upgrade)
 #Role: Evaluates temporal yield, cold-start logic, and spending pacing variance.
 #"""
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __date__ = "2026-09-15"
 
 import os
@@ -16,6 +16,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+import alu_utils
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -70,88 +71,8 @@ def get_next_version_number(directory: str, base_filename: str) -> int:
     return max_version + 1
 
 # ==============================================================================
-# PHASE 1: PROGRAMMATIC STATE & TEMPORAL EXTRACTION
+# PHASE 2: MACRO BENCHMARK RETRIEVAL
 # ==============================================================================
-def extract_constants_data(constants_text: str) -> dict:
-    data = {'min_statistical_days': 90}
-    match_days = re.search(r'CONST_MIN_STATISTICAL_DAYS\s*:\s*(\d+)', constants_text)
-    if match_days:
-        data['min_statistical_days'] = int(match_days.group(1))
-    return data
-
-def extract_ledger_data(ledger_text: str) -> dict:
-    data = {
-        'market_status': 'UNKNOWN',
-        'total_executed_equities': 0.0,
-        'pacing_variance_value': 0.0,
-        'milestones': []
-    }
-    
-    match_status = re.search(r'Active Market Status Designation:\s*\[(.*?)\]', ledger_text)
-    if match_status:
-        data['market_status'] = match_status.group(1).strip()
-        
-    match_executed = re.search(r'Total Executed Holdings Market Value.*?\:\s*\$?([\d,]+\.\d{2})', ledger_text)
-    if match_executed:
-        data['total_executed_equities'] = float(match_executed.group(1).replace(',', ''))
-        
-    match_variance = re.search(r'Net Adjusted Pacing Variance:\s*([+-]?)\$?([+-]?[\d,]+\.\d{2})', ledger_text)
-    if match_variance:
-        sign = match_variance.group(1)
-        val_str = match_variance.group(2)
-        if val_str.startswith('-') or sign == '-':
-            multiplier = -1.0
-            val_str = val_str.replace('-', '')
-        else:
-            multiplier = 1.0
-            val_str = val_str.replace('+', '')
-        data['pacing_variance_value'] = float(val_str.replace(',', '')) * multiplier
-
-    milestone_block_match = re.search(r'ROLLING HISTORICAL MILESTONE LEDGER.*?\n(.*?)(?:={80}|\Z)', ledger_text, re.DOTALL)
-    if milestone_block_match:
-        milestone_block = milestone_block_match.group(1)
-        pattern = r'\[(\d{4}-\d{2}-\d{2})\s*\|.*?\s*\$?[\d,]+\.\d{2}\s*\|\s*\$?([\d,]+\.\d{2})\s*\|'
-        matches = re.findall(pattern, milestone_block)
-        for date_str, eq_str in matches:
-            data['milestones'].append({
-                'date': datetime.strptime(date_str, "%Y-%m-%d"),
-                'executed_equities': float(eq_str.replace(',', ''))
-            })
-            
-    data['milestones'] = sorted(data['milestones'], key=lambda x: x['date'])
-    return data
-
-# ==============================================================================
-# PHASE 2 & 3: TEMPORAL YIELD & MACRO BENCHMARK RETRIEVAL
-# ==============================================================================
-def calculate_temporal_yield(ledger_data: dict, min_days: int) -> dict:
-    yield_data = {
-        'delta_days': 0,
-        'is_cold_start': True,
-        'portfolio_yield_pct': 0.0,
-        'oldest_date_str': '',
-        'current_date_str': datetime.now().strftime("%Y-%m-%d")
-    }
-    
-    if not ledger_data['milestones']:
-        return yield_data
-        
-    oldest_node = ledger_data['milestones'][0]
-    current_val = ledger_data['total_executed_equities']
-    oldest_val = oldest_node['executed_equities']
-    
-    current_date = datetime.now()
-    delta = current_date - oldest_node['date']
-    yield_data['delta_days'] = delta.days
-    yield_data['oldest_date_str'] = oldest_node['date'].strftime("%Y-%m-%d")
-    
-    if yield_data['delta_days'] >= min_days:
-        yield_data['is_cold_start'] = False
-        if oldest_val > 0:
-            yield_data['portfolio_yield_pct'] = ((current_val - oldest_val) / oldest_val) * 100.0
-            
-    return yield_data
-
 def retrieve_macro_benchmark(client, yield_data: dict) -> str:
     print(f"\n{ANSI_CYAN}[System] Initiating Live Web Search via Gemini API. Please wait...{ANSI_RESET}")
     print(f"{ANSI_YELLOW}[API DISCLOSURE] Model: {LLM_MODEL_NAME} | Tool: Google Search | Thinking: High{ANSI_RESET}")
@@ -186,25 +107,7 @@ def retrieve_macro_benchmark(client, yield_data: dict) -> str:
         sys.exit(1)
 
 # ==============================================================================
-# PHASE 4: COMPARATIVE MATHEMATICS (SPENDING EVALUATION)
-# ==============================================================================
-def evaluate_spending_variance(variance: float) -> str:
-    """Evaluates pacing variance and returns the strict deterministic directive."""
-    if variance <= -5000.00:
-        return (f"Deficit: -${abs(variance):,.2f}. "
-                "DIRECTIVE (Condition 2.A): You are overspending against your YTD target and pending liabilities. "
-                "Delay major discretionary purchases or expensive travel.")
-    elif variance >= 5000.00:
-        return (f"Surplus: +${variance:,.2f}. "
-                "DIRECTIVE (Condition 2.B): You are underspending. You have a verified budget surplus "
-                "and can afford to make a major discretionary purchase or book a trip.")
-    else:
-        status = f"+${variance:,.2f}" if variance >= 0 else f"-${abs(variance):,.2f}"
-        return (f"Neutral: {status}. "
-                "DIRECTIVE (Condition 2.C): Your spending is precisely on target. Keep spending at the current pace.")
-
-# ==============================================================================
-# PHASE 5: OUTPUT PAYLOAD GENERATION (LLM FORMATTING)
+# PHASE 3: OUTPUT PAYLOAD GENERATION (LLM FORMATTING)
 # ==============================================================================
 def generate_final_report(client, yield_data: dict, benchmark_text: str, spending_directive: str, market_status: str, min_days: int) -> None:
     print(f"\n{ANSI_CYAN}[System] Generating Final Fiduciary Report...{ANSI_RESET}")
@@ -215,7 +118,6 @@ def generate_final_report(client, yield_data: dict, benchmark_text: str, spendin
     final_filename = f"{base_name}_v{next_version}.txt"
     final_filepath = os.path.join(REPORTS_DIR, final_filename)
     
-    # Handle the Cold-Start formatting logic so the LLM doesn't hallucinate 0.0%
     if yield_data['is_cold_start']:
         days_remaining = min_days - yield_data['delta_days']
         trend_instructions = f"""
@@ -305,9 +207,8 @@ def main():
         sys.exit(1)
 
     client = genai.Client()
-    print(f"{ANSI_GREEN}[System] Core framework and API initialized.{ANSI_RESET}")
     
-    # PHASE 1
+    # 1. Locate Core Files
     print(f"\n{ANSI_CYAN}[System] Locating Core Files...{ANSI_RESET}")
     constants_file = None
     ledger_file = None
@@ -324,19 +225,29 @@ def main():
             user_input = input(f"{ANSI_CYAN}Press ENTER to retry, or type 'exit' to quit: {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
 
+    # 2. Parse State via ALU
     constants_text = load_file_content(constants_file)
     ledger_text = load_file_content(ledger_file)
-    const_data = extract_constants_data(constants_text)
-    ledger_data = extract_ledger_data(ledger_text)
+    const_data = alu_utils.extract_constants_data(constants_text)
+    ledger_data = alu_utils.extract_trend_metrics(ledger_text)
     
-    # PHASE 2 & 3
-    yield_data = calculate_temporal_yield(ledger_data, const_data['min_statistical_days'])
+    # 3. Deterministic Math via ALU
+    yield_data = alu_utils.calculate_temporal_yield(ledger_data, const_data['min_statistical_days'])
+    spending_directive = alu_utils.evaluate_spending_variance(ledger_data['pacing_variance_value'])
+    
+    # UX UPGRADE: Print deterministic findings to terminal before LLM generation
+    print(f"\n{ANSI_CYAN}" + "-"*60)
+    print(" DETERMINISTIC ALU FINDINGS")
+    print("-" * 60 + f"{ANSI_RESET}")
+    print(f"Timeframe: {yield_data['delta_days']} days (Cold Start: {yield_data['is_cold_start']})")
+    if not yield_data['is_cold_start']:
+        print(f"Internal Yield: {yield_data['portfolio_yield_pct']:.2f}%")
+    print(f"Pacing Variance: {spending_directive.split('.')[0]}")
+    print(f"{ANSI_CYAN}" + "-"*60 + f"{ANSI_RESET}")
+    
+    # 4. Macro Telemetry & LLM Report Generation
     macro_benchmark_text = retrieve_macro_benchmark(client, yield_data)
     
-    # PHASE 4
-    spending_directive = evaluate_spending_variance(ledger_data['pacing_variance_value'])
-    
-    # PHASE 5
     generate_final_report(
         client=client, 
         yield_data=yield_data, 
