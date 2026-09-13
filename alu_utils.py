@@ -438,3 +438,44 @@ def evaluate_spending_variance(variance: float) -> str:
         status = f"+${variance:,.2f}" if variance >= 0 else f"-${abs(variance):,.2f}"
         return (f"Neutral: {status}. "
                 "DIRECTIVE (Condition 2.C): Your spending is precisely on target. Keep spending at the current pace.")
+
+def calculate_liquidity_gate(requested_spend: float, variance: float) -> dict:
+    """Evaluates if the requested spend fits within the current pacing surplus."""
+    available_budget = variance if variance > 0 else 0.0
+    is_sufficient = requested_spend <= available_budget
+    return {
+        'available_budget': available_budget,
+        'is_sufficient': is_sufficient
+    }
+
+def extract_proxy_yield_from_text(benchmark_text: str) -> float:
+    """Extracts the percentage float from the LLM's macro benchmark search text."""
+    match = re.search(r'([+-]?\d+\.\d+)%', benchmark_text)
+    if match:
+        return float(match.group(1))
+    return 0.0
+
+def evaluate_decision_matrix(requested: float, budget: float, market_status: str, portfolio_yield: float, benchmark: float) -> str:
+    """Executes the strict algorithmic evaluation of the spending request."""
+    status_upper = market_status.upper()
+    
+    # 1. INSUFFICIENT BUDGET (Overrides all market conditions)
+    if requested > budget:
+        return "REJECT. You do not have the YTD liquidity to support this purchase without cannibalizing future mandatory fixed liabilities."
+        
+    # 2. CONDITION C (Crash / Bear Market)
+    if "RED ACTIVATED" in status_upper or portfolio_yield < -15.0:
+        return "REJECT. Discretionary spending is frozen. Capital preservation protocols are active to protect the cash bridge."
+        
+    # 3. CONDITION B (Anemic / Drag)
+    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
+        if portfolio_yield < 0.0 or portfolio_yield < (benchmark - 1.50):
+            return "CAUTION & REDUCE. You have the baseline budget, but your portfolio is experiencing systemic drag or nominal losses. Recommend downgrading the purchase cost by 30% to 50% or postponing."
+            
+    # 4. CONDITION A (Excellent / Green Light)
+    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
+        if portfolio_yield >= 0.0 and portfolio_yield >= (benchmark - 1.50):
+            return "APPROVED. Liquidity is secured, pending liabilities are funded, and the portfolio is operating at optimal efficiency."
+            
+    # Fallback (Just in case market status string is malformed)
+    return "PENDING. Manual review required due to ambiguous market status designation in the Portfolio Ledger."

@@ -2,10 +2,10 @@
 #"""
 #Spending Request & Affordability Evaluation Engine
 #Date: 2026-09-15
-#Version: 1.0.0 
+#Version: 1.1.0 (ALU Refactor & UX Transparency Upgrade)
 #Role: Evaluates discretionary spending requests against liquidity and market telemetry.
 #"""
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __date__ = "2026-09-15"
 
 import os
@@ -16,6 +16,7 @@ from datetime import datetime
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+import alu_utils
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -80,99 +81,8 @@ def get_next_version_number(directory: str, base_filename: str) -> int:
     return max_version + 1
 
 # ==============================================================================
-# PHASE 1: PROGRAMMATIC STATE EXTRACTION
+# PHASE 3: MARKET TELEMETRY
 # ==============================================================================
-def extract_constants_data(constants_text: str) -> dict:
-    data = {'min_statistical_days': 90}
-    match_days = re.search(r'CONST_MIN_STATISTICAL_DAYS\s*:\s*(\d+)', constants_text)
-    if match_days:
-        data['min_statistical_days'] = int(match_days.group(1))
-    return data
-
-def extract_ledger_data(ledger_text: str) -> dict:
-    data = {
-        'market_status': 'UNKNOWN',
-        'total_executed_equities': 0.0,
-        'pacing_variance_value': 0.0,
-        'milestones': []
-    }
-    
-    match_status = re.search(r'Active Market Status Designation:\s*\[(.*?)\]', ledger_text)
-    if match_status:
-        data['market_status'] = match_status.group(1).strip()
-        
-    match_executed = re.search(r'Total Executed Holdings Market Value.*?\:\s*\$?([\d,]+\.\d{2})', ledger_text)
-    if match_executed:
-        data['total_executed_equities'] = float(match_executed.group(1).replace(',', ''))
-        
-    match_variance = re.search(r'Net Adjusted Pacing Variance:\s*([+-]?)\$?([+-]?[\d,]+\.\d{2})', ledger_text)
-    if match_variance:
-        sign = match_variance.group(1)
-        val_str = match_variance.group(2)
-        if val_str.startswith('-') or sign == '-':
-            multiplier = -1.0
-            val_str = val_str.replace('-', '')
-        else:
-            multiplier = 1.0
-            val_str = val_str.replace('+', '')
-        data['pacing_variance_value'] = float(val_str.replace(',', '')) * multiplier
-
-    milestone_block_match = re.search(r'ROLLING HISTORICAL MILESTONE LEDGER.*?\n(.*?)(?:={80}|\Z)', ledger_text, re.DOTALL)
-    if milestone_block_match:
-        milestone_block = milestone_block_match.group(1)
-        pattern = r'\[(\d{4}-\d{2}-\d{2})\s*\|.*?\s*\$?[\d,]+\.\d{2}\s*\|\s*\$?([\d,]+\.\d{2})\s*\|'
-        matches = re.findall(pattern, milestone_block)
-        for date_str, eq_str in matches:
-            data['milestones'].append({
-                'date': datetime.strptime(date_str, "%Y-%m-%d"),
-                'executed_equities': float(eq_str.replace(',', ''))
-            })
-            
-    data['milestones'] = sorted(data['milestones'], key=lambda x: x['date'])
-    return data
-
-# ==============================================================================
-# PHASE 2: LIQUIDITY GATE CALCULATION
-# ==============================================================================
-def calculate_liquidity_gate(requested_spend: float, variance: float) -> dict:
-    available_budget = variance if variance > 0 else 0.0
-    is_sufficient = requested_spend <= available_budget
-    return {
-        'available_budget': available_budget,
-        'is_sufficient': is_sufficient
-    }
-
-# ==============================================================================
-# PHASE 3: MARKET TELEMETRY & COLD-START LOGIC
-# ==============================================================================
-def calculate_temporal_yield(ledger_data: dict, min_days: int) -> dict:
-    yield_data = {
-        'delta_days': 0,
-        'is_cold_start': True,
-        'portfolio_yield_pct': 0.0,
-        'oldest_date_str': '',
-        'current_date_str': datetime.now().strftime("%Y-%m-%d")
-    }
-    
-    if not ledger_data['milestones']:
-        return yield_data
-        
-    oldest_node = ledger_data['milestones'][0]
-    current_val = ledger_data['total_executed_equities']
-    oldest_val = oldest_node['executed_equities']
-    
-    current_date = datetime.now()
-    delta = current_date - oldest_node['date']
-    yield_data['delta_days'] = delta.days
-    yield_data['oldest_date_str'] = oldest_node['date'].strftime("%Y-%m-%d")
-    
-    if yield_data['delta_days'] >= min_days:
-        yield_data['is_cold_start'] = False
-        if oldest_val > 0:
-            yield_data['portfolio_yield_pct'] = ((current_val - oldest_val) / oldest_val) * 100.0
-            
-    return yield_data
-
 def retrieve_macro_benchmark(client, yield_data: dict) -> str:
     print(f"\n{ANSI_CYAN}[System] Initiating Live Web Search via Gemini API. Please wait...{ANSI_RESET}")
     print(f"{ANSI_YELLOW}[API DISCLOSURE] Model: {LLM_MODEL_NAME} | Tool: Google Search | Thinking: High{ANSI_RESET}")
@@ -202,40 +112,6 @@ def retrieve_macro_benchmark(client, yield_data: dict) -> str:
     except Exception as e:
         print(f"{ANSI_RED}[FATAL ERROR] Failed to retrieve live data: {e}{ANSI_RESET}")
         sys.exit(1)
-
-def extract_proxy_yield_from_text(benchmark_text: str) -> float:
-    match = re.search(r'([+-]?\d+\.\d+)%', benchmark_text)
-    if match:
-        return float(match.group(1))
-    return 0.0
-
-# ==============================================================================
-# PHASE 4: THE A/B/C MULTI-DIMENSIONAL DECISION MATRIX
-# ==============================================================================
-def evaluate_decision_matrix(requested: float, budget: float, market_status: str, portfolio_yield: float, benchmark: float) -> str:
-    """Executes the strict algorithmic evaluation of the spending request."""
-    status_upper = market_status.upper()
-    
-    # 1. INSUFFICIENT BUDGET (Overrides all market conditions)
-    if requested > budget:
-        return "REJECT. You do not have the YTD liquidity to support this purchase without cannibalizing future mandatory fixed liabilities."
-        
-    # 2. CONDITION C (Crash / Bear Market)
-    if "RED ACTIVATED" in status_upper or portfolio_yield < -15.0:
-        return "REJECT. Discretionary spending is frozen. Capital preservation protocols are active to protect the cash bridge."
-        
-    # 3. CONDITION B (Anemic / Drag)
-    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
-        if portfolio_yield < 0.0 or portfolio_yield < (benchmark - 1.50):
-            return "CAUTION & REDUCE. You have the baseline budget, but your portfolio is experiencing systemic drag or nominal losses. Recommend downgrading the purchase cost by 30% to 50% or postponing."
-            
-    # 4. CONDITION A (Excellent / Green Light)
-    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
-        if portfolio_yield >= 0.0 and portfolio_yield >= (benchmark - 1.50):
-            return "APPROVED. Liquidity is secured, pending liabilities are funded, and the portfolio is operating at optimal efficiency."
-            
-    # Fallback (Just in case market status string is malformed)
-    return "PENDING. Manual review required due to ambiguous market status designation in the Portfolio Ledger."
 
 # ==============================================================================
 # PHASE 5: OUTPUT PAYLOAD GENERATION (LLM FORMATTING)
@@ -361,27 +237,40 @@ def main():
 
     constants_text = load_file_content(constants_file)
     ledger_text = load_file_content(ledger_file)
-    const_data = extract_constants_data(constants_text)
-    ledger_data = extract_ledger_data(ledger_text)
+    
+    # Parse State via ALU (Reusing functions from 03)
+    const_data = alu_utils.extract_constants_data(constants_text)
+    ledger_data = alu_utils.extract_trend_metrics(ledger_text)
     
     # PHASE 2
-    liquidity_data = calculate_liquidity_gate(requested_spend, ledger_data['pacing_variance_value'])
+    liquidity_data = alu_utils.calculate_liquidity_gate(requested_spend, ledger_data['pacing_variance_value'])
     
     # PHASE 3
-    yield_data = calculate_temporal_yield(ledger_data, const_data['min_statistical_days'])
+    yield_data = alu_utils.calculate_temporal_yield(ledger_data, const_data['min_statistical_days'])
     macro_benchmark_text = retrieve_macro_benchmark(client, yield_data)
     
-    benchmark_yield_pct = extract_proxy_yield_from_text(macro_benchmark_text)
+    benchmark_yield_pct = alu_utils.extract_proxy_yield_from_text(macro_benchmark_text)
     effective_portfolio_yield = benchmark_yield_pct if yield_data['is_cold_start'] else yield_data['portfolio_yield_pct']
     
     # PHASE 4
-    directive = evaluate_decision_matrix(
+    directive = alu_utils.evaluate_decision_matrix(
         requested=requested_spend,
         budget=liquidity_data['available_budget'],
         market_status=ledger_data['market_status'],
         portfolio_yield=effective_portfolio_yield,
         benchmark=benchmark_yield_pct
     )
+    
+    # UX UPGRADE: Print deterministic findings to terminal before LLM generation
+    print(f"\n{ANSI_CYAN}" + "-"*60)
+    print(" DETERMINISTIC ALU FINDINGS")
+    print("-" * 60 + f"{ANSI_RESET}")
+    print(f"Requested Spend: ${requested_spend:,.2f}")
+    print(f"Available Budget: ${liquidity_data['available_budget']:,.2f}")
+    print(f"Effective Yield: {effective_portfolio_yield:.2f}%")
+    print(f"Benchmark Yield: {benchmark_yield_pct:.2f}%")
+    print(f"Directive: {directive.split('.')[0]}")
+    print(f"{ANSI_CYAN}" + "-"*60 + f"{ANSI_RESET}")
     
     # PHASE 5
     generate_final_report(
