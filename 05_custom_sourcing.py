@@ -2,10 +2,10 @@
 #"""
 #Dynamic Custom Sourcing & Liquidation Engine
 #Date: 2026-09-15
-#Version: 2.0.1 (ALU Refactor & Deterministic Boundary Enforcement)
+#Version: 2.0.3 (LLM Cash Constraint & UX Semantic Polish)
 #Role: Executes tax-optimized liquidations, live macro telemetry, LLM Fiduciary Audit, and ledger updates.
 #"""
-__version__ = "2.0.1"
+__version__ = "2.0.3"
 __date__ = "2026-09-15"
 
 import os
@@ -153,6 +153,9 @@ def fiduciary_audit_loop(client, quant_lots: list, search_data: str, custom_inst
     If the algorithm selected a ticker that is currently at a cyclical bottom or facing a temporary headwind that will reverse, you MUST advise the user to override the algorithm and suggest a better alternative from their portfolio.
     If the algorithm's choice is sound, validate it.
     
+    [STRICT NEGATIVE CONSTRAINT]
+    Do NOT recommend sourcing funds from Bucket 1 (Cash/Liquidity). The user has explicitly chosen to preserve cash and execute an equity liquidation. Your recommendation MUST be an equity liquidation from the available taxable buckets.
+    
     Output your analysis strictly formatted as an 80-character line-wrapped Markdown text block.
     """
     
@@ -169,11 +172,11 @@ def fiduciary_audit_loop(client, quant_lots: list, search_data: str, custom_inst
         return chat_session, transcript
         
     print(f"\n{ANSI_GREEN}[System] You can now ask follow-up questions or challenge the AI's logic.{ANSI_RESET}")
-    print("Type 'accept', 'finalize', 'done', or 'exit' when you are ready to proceed to execution.")
+    print("Type 'done' or 'exit' when you are ready to proceed to the final execution menu.")
     
     while True:
         user_input = input(f"\n{ANSI_CYAN}[You]: {ANSI_RESET}").strip()
-        if user_input.lower() in ['accept', 'finalize', 'done', 'exit']:
+        if user_input.lower() in ['done', 'exit']:
             print(f"\n{ANSI_CYAN}[System] Audit session finalized.{ANSI_RESET}")
             break
         if not user_input:
@@ -333,18 +336,20 @@ def main():
     chat_session, chat_transcript = fiduciary_audit_loop(client, quant_baseline_lots, search_data, custom_instructions, ledger_text, withdrawal_amount)
     
     # 5. Human-in-the-Loop Override Trapping
+    baseline_tickers = ", ".join([lot['ticker'] for lot in quant_baseline_lots])
+    
     print(f"\n{ANSI_CYAN}" + "="*60)
     print(" FINAL EXECUTION CONFIRMATION")
     print("="*60 + f"{ANSI_RESET}")
-    print("Press ENTER to accept the Quant Baseline Proposal.")
-    print("OR type the specific tickers you wish to liquidate instead (e.g., 'USFR, DGRO').")
+    print(f"Press ENTER to execute the original Quant Baseline: {ANSI_YELLOW}[{baseline_tickers}]{ANSI_RESET}")
+    print("OR type the specific tickers you wish to liquidate instead based on the AI's advice (e.g., 'SCHG').")
     
     final_lots = []
     while True:
-        override_input = input(f"\n{ANSI_YELLOW}Override Tickers (or ENTER to accept): {ANSI_RESET}").strip().upper()
+        override_input = input(f"\n{ANSI_YELLOW}Override Tickers (or ENTER to accept baseline): {ANSI_RESET}").strip().upper()
         if not override_input:
             final_lots = quant_baseline_lots
-            print(f"{ANSI_GREEN}[System] Baseline accepted. Proceeding with execution...{ANSI_RESET}")
+            print(f"{ANSI_GREEN}[System] Baseline [{baseline_tickers}] accepted. Proceeding with execution...{ANSI_RESET}")
             break
         else:
             override_tickers = [t.strip() for t in re.split(r'[, ]+', override_input) if t.strip()]
