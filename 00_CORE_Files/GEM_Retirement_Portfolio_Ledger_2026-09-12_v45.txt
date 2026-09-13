@@ -1,6 +1,6 @@
 ================================================================================
 PORTFOLIO ALLOCATION LEDGER & BUCKET STRUCTURE
-Date: 2026-09-09 (Version 39)
+Date: 2026-09-12 (Version 45)
 Framework Structure: 8 Macro Asset Buckets (Single Account Architecture)
 Active Market Status Designation: [NEUTRAL / SIDEWAYS]
 Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...5669)
@@ -8,9 +8,9 @@ Reconciliation Source: Dual-CSV Ingestion (All Accounts + Account ...5669)
 
 PERSISTENT YTD TAX LEDGER (TAX YEAR 2026)
 --------------------------------------------------------------------------------
-0% LTCG Tax Headroom Baseline (Single Filer):         $49,200.00
+0% LTCG Tax Headroom Baseline (Single Filer):         $49,450.00
 Federal Standard Deduction (2026):                     $16,100.00
-Maximum Gross Taxable Income for 0% LTCG Bracket:     $65,300.00
+Maximum Gross Taxable Income for 0% LTCG Bracket:     $65,550.00
 
 Realized Tax Event Log:
   - 2026-08-14 | Legacy Brokerage (...9739) Liquidation
@@ -22,12 +22,15 @@ Realized Tax Event Log:
   - 2026-08-31 | Individual Brokerage (...0331 & ...7851) Liquidation
     * Net Realized STCG (VOO, VB, VO):                 -$4,055.66
 
+  - 2026-09-11 | Realized Gains Ingestion (VIG_2026_09_11)
+    * Net Realized STCG: $-1,981.81
+
 YTD Cumulative Tax Summary:
   - Ordinary Income YTD (Pension / Social Security):       $0.00
-  - Realized Short-Term Capital Gains YTD:              -$3,782.47
-  - Realized Long-Term Capital Gains (LTCG) YTD:      $14,732.40
-  - Starting 0% LTCG Headroom:                        $49,200.00
-  - Remaining 0% LTCG Headroom:                       $34,467.60
+  - Realized Short-Term Capital Gains YTD:              -$5,764.28
+  - Realized Long-Term Capital Gains (LTCG) YTD:      +$14,732.40
+  - Starting 0% LTCG Headroom:                        $49,450.00
+  - Remaining 0% LTCG Headroom:                       $34,717.60
 
 30-DAY WASH-SALE LOCKOUT TRACKER:
   - VB | Date Sold: 2026-09-01 | Lockout Expiry: 2026-10-01
@@ -38,30 +41,30 @@ YTD Cumulative Tax Summary:
 
 DATE-AWARE SPENDING PACING ENGINE & LIABILITY FORECAST
 --------------------------------------------------------------------------------
-Current Date: 2026-09-09
-Annual Target Net Drawdown Gap: $53,249.01
+Current Date: 2026-09-12
+Annual Target Net Drawdown Gap: $71,725.58
 
-  - Total A (Paced YTD Target):                   $35,596.60
+  - Total A (Paced YTD Target):                   $50,109.65
   - Total B (Actual YTD Drawdown):                     $0.00
-  - Pacing Variance (Gross):                     -$35,596.60 (Under paced target)
+  - Pacing Variance (Gross):                     +$50,109.65 (Under paced target)
   
-  - Pending Fixed Liabilities (YTD Remaining):    $8,522.00
-  - Net Adjusted Pacing Variance:                +$27,074.60
+  - Pending Fixed Liabilities (YTD Remaining):    $13,371.35
+  - Net Adjusted Pacing Variance:                +$36,738.30 (Surplus)
 
 --------------------------------------------------------------------------------
 
 [BUCKET 1] LIQUIDITY & PRESERVATION
   - Identity: Short-Term Liquidity, Safety, & Risk Insulation Buffer
   - Holdings Breakdown:
-      * Operational Cash (E*TRADE Savings ...1600):    $85,000.00 [In E*TRADE]
+      * Operational Cash (E*TRADE Savings ...1600):    $97,667.41 [In E*TRADE]
       * CD Bucket #1 (Matures 10/17/2026):            $100,000.00 [External]
       * CD Bucket #2 (Matures 04/14/2027):            $100,000.00 [In E*TRADE]
       * CD Bucket #3 (Matures 05/05/2027):            $100,000.00 [In E*TRADE]
       * CD Bucket #4 (Matures 05/05/2027):            $100,000.00 [In E*TRADE]
       * CD Bucket #5 (Matures 05/05/2027):            $100,000.00 [In E*TRADE]
-  - Subtotal E*TRADE Bucket 1 Capital:               $485,000.00
+  - Subtotal E*TRADE Bucket 1 Capital:               $497,667.41
   - Subtotal External Bucket 1 Capital:              $100,000.00
-  - Total Bucket 1 Liquidity:                        $585,000.00
+  - Total Bucket 1 Liquidity:                        $597,667.41
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -70,14 +73,14 @@ Annual Target Net Drawdown Gap: $53,249.01
   - Account: ...0331
   - Holdings (CSV Reconciled):
       * GSLC : 1039.0000 shares
-        [Price: $145.160 | Basis: $115,964.62 | Value: $150,821.24 | +$34,856.62]
+        [Price: $145.800 | Basis: $115,964.62 | Value: $151,486.20 | +$35,521.58]
       * QUAL : 67.2000 shares
-        [Price: $219.545 | Basis: $14,978.38 | Value: $14,753.42 | -$224.96]
+        [Price: $220.200 | Basis: $14,978.38 | Value: $14,797.44 | -$180.94]
       * SCHG : 5885.0000 shares
-        [Price: $34.985 | Basis: $209,535.43 | Value: $205,886.73 | -$3,648.70]
+        [Price: $35.160 | Basis: $209,535.43 | Value: $206,916.60 | -$2,618.83]
       * SCHX : 3275.8000 shares
-        [Price: $30.010 | Basis: $98,912.79 | Value: $98,307.09 | -$605.70]
-  - Account Value (Executed Equities): $469,768.47
+        [Price: $30.110 | Basis: $98,912.78 | Value: $98,634.34 | -$278.44]
+  - Account Value (Executed Equities): $471,834.58
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -86,12 +89,12 @@ Annual Target Net Drawdown Gap: $53,249.01
   - Account: ...2008
   - Holdings (CSV Reconciled):
       * MAIN : 346.0000 shares
-        [Price: $56.285 | Basis: $20,061.08 | Value: $19,474.61 | -$586.47]
+        [Price: $56.220 | Basis: $20,061.08 | Value: $19,452.12 | -$608.96]
       * O    : 324.1660 shares
-        [Price: $60.315 | Basis: $19,975.11 | Value: $19,552.07 | -$423.04]
+        [Price: $59.500 | Basis: $19,975.11 | Value: $19,287.88 | -$687.23]
       * SCHD : 1748.2950 shares
-        [Price: $34.120 | Basis: $60,229.96 | Value: $59,651.72 | -$578.24]
-  - Account Value (Executed Equities): $98,678.40
+        [Price: $34.120 | Basis: $60,229.96 | Value: $59,651.83 | -$578.13]
+  - Account Value (Executed Equities): $98,391.83
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -100,12 +103,12 @@ Annual Target Net Drawdown Gap: $53,249.01
   - Account: ...7851
   - Holdings (CSV Reconciled):
       * AVUV : 277.4470 shares
-        [Price: $124.250 | Basis: $34,991.62 | Value: $34,472.79 | -$518.83]
+        [Price: $124.500 | Basis: $34,991.62 | Value: $34,542.15 | -$449.47]
       * SCHA : 1422.9010 shares
-        [Price: $34.150 | Basis: $48,371.52 | Value: $48,592.21 | +$220.69]
+        [Price: $33.790 | Basis: $48,371.51 | Value: $48,079.82 | -$291.69]
       * SCHM : 1372.8000 shares
-        [Price: $35.420 | Basis: $48,645.17 | Value: $48,624.30 | -$20.87]
-  - Account Value (Executed Equities): $131,689.30
+        [Price: $35.130 | Basis: $48,645.17 | Value: $48,226.46 | -$418.71]
+  - Account Value (Executed Equities): $130,848.44
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -114,14 +117,14 @@ Annual Target Net Drawdown Gap: $53,249.01
   - Account: ...2641
   - Holdings (CSV Reconciled):
       * AVDV : 268.0720 shares
-        [Price: $111.930 | Basis: $29,999.94 | Value: $30,005.30 | +$5.36]
+        [Price: $111.610 | Basis: $29,999.94 | Value: $29,919.52 | -$80.42]
       * EMXC : 204.5500 shares
-        [Price: $101.470 | Basis: $19,995.79 | Value: $20,755.71 | +$759.92]
+        [Price: $100.590 | Basis: $19,995.79 | Value: $20,575.68 | +$579.89]
       * VIGI : 505.0910 shares
-        [Price: $96.790 | Basis: $50,011.59 | Value: $48,887.76 | -$1,123.83]
+        [Price: $96.990 | Basis: $50,011.59 | Value: $48,988.78 | -$1,022.81]
       * VXUS : 567.0990 shares
-        [Price: $87.435 | Basis: $49,981.27 | Value: $49,584.30 | -$396.97]
-  - Account Value (Executed Equities): $149,233.07
+        [Price: $87.140 | Basis: $49,981.27 | Value: $49,417.01 | -$564.26]
+  - Account Value (Executed Equities): $148,900.98
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -130,10 +133,10 @@ Annual Target Net Drawdown Gap: $53,249.01
   - Account: ...5669
   - Holdings (CSV Reconciled):
       * SCHD : 1072.0000 shares
-        [Price: $34.120 | Basis: $36,757.81 | Value: $36,576.75 | -$181.06]
+        [Price: $34.120 | Basis: $36,757.81 | Value: $36,576.64 | -$181.17]
       * VIG  : 161.3840 shares
-        [Price: $238.660 | Basis: $39,760.08 | Value: $38,515.91 | -$1,244.17]
-  - Account Value (Executed Equities): $75,092.65
+        [Price: $239.430 | Basis: $39,760.08 | Value: $38,640.17 | -$1,119.91]
+  - Account Value (Executed Equities): $75,216.81
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -141,9 +144,9 @@ Annual Target Net Drawdown Gap: $53,249.01
 [BUCKET 7] U.S. DIVIDEND GROWTH & APPRECIATION
   - Account: ...2654
   - Holdings (CSV Reconciled):
-      * VIG  : 408.7000 shares
-        [Price: $238.700 | Basis: $99,963.07 | Value: $97,563.20 | -$2,399.87]
-  - Account Value (Executed Equities): $97,563.20
+      * DGRO : 1251.0370 shares
+        [Price: $78.240 | Basis: $97,999.98 | Value: $97,881.13 | -$118.85]
+  - Account Value (Executed Equities): $97,881.13
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -152,8 +155,8 @@ Annual Target Net Drawdown Gap: $53,249.01
   - Account: ...2670
   - Holdings (CSV Reconciled):
       * USFR : 1981.3000 shares
-        [Price: $50.418 | Basis: $99,990.08 | Value: $99,893.98 | -$96.10]
-  - Account Value (Executed Equities): $99,893.98
+        [Price: $50.460 | Basis: $99,990.07 | Value: $99,976.40 | -$13.67]
+  - Account Value (Executed Equities): $99,976.40
   - Status: ACTIVE / RECONCILED
 
 --------------------------------------------------------------------------------
@@ -161,16 +164,16 @@ Annual Target Net Drawdown Gap: $53,249.01
 ================================================================================
 RECONCILED TOTAL SYSTEM CAPITAL (ZERO DOUBLE-COUNTING AUDIT)
 ================================================================================
-  - Total Executed Holdings Market Value (Buckets 2–8):         $1,121,919.07
-  - E*TRADE Reported Total Platform Cash Line:                    $498,123.68
+  - Total Executed Holdings Market Value (Buckets 2–8):         $1,123,050.17
+  - E*TRADE Reported Total Platform Cash Line:                    $498,363.66
       * Consisting of:
-        - Uninvested Brokerage Cash (Buckets 2–8):      $13,123.68
-        - Operational Cash Buffer (Savings ...1600): $85,000.00
-        - E*TRADE CD Ladder (4 x $100k Tranches):   $400,000.00
-  - Subtotal E*TRADE Platform Assets:                           $1,620,042.75
+        - Uninvested Brokerage Cash (LITTLE_CASH):      $696.25
+        - Operational Cash Buffer (Savings ...1600): $97,667.41
+        - E*TRADE CD Ladder:                        $400,000.00
+  - Subtotal E*TRADE Platform Assets:                           $1,621,413.83
   - External Bank Capital (CD Bucket #1):                         $100,000.00
 --------------------------------------------------------------------------------
-  - COMBINED TOTAL SYSTEM CAPITAL:                              $1,720,042.75
+  - COMBINED TOTAL SYSTEM CAPITAL:                              $1,721,413.83
 ================================================================================
 
 ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
@@ -180,4 +183,6 @@ ROLLING HISTORICAL MILESTONE LEDGER (TRAILING 8 QUARTERS)
 [2026-08-30 | $1,733,426.88 | $1,136,814.88 | $585,000.00 | $0.00 | NORMAL]
 [2026-09-01 | $1,731,829.88 | $1,133,706.20 | $598,123.68 | $0.00 | NORMAL]
 [2026-09-09 | $1,720,042.75 | $1,121,919.07 | $598,123.68 | $0.00 | NEUTRAL / SIDEWAYS]
+[2026-09-11 | $1,721,912.11 | $1,123,529.74 | $598,382.37 | $0.00 | DIP / CORRECTION]
+[2026-09-12 | $1,721,413.83 | $1,123,050.17 | $598,363.66 | $0.00 | NEUTRAL / SIDEWAYS]
 ================================================================================
