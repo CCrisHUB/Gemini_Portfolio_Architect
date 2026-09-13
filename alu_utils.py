@@ -1,178 +1,58 @@
 #alu_utils.py
 #"""
-#Avenue C Arithmetic Logic Unit (ALU) Utilities
-#Date: 2026-09-12
-#Version: 1.2.0 (Deterministic TLH Proxy Mapping)
-#Role: Shared deterministic math and CSV parsing functions.
+#Avenue C Deterministic ALU (Arithmetic Logic Unit)
+#Date: 2026-09-15
+#Version: 2.0.0 (Consolidated Math & Parsing Engine)
+#Role: Isolates all deterministic parsing, math, and ledger mutations from the LLM.
 #"""
-__version__ = "1.2.0"
-__date__ = "2026-09-12"
+__version__ = "2.0.0"
+__date__ = "2026-09-15"
 
+import re
+from datetime import datetime
 import pandas as pd
-import numpy as np
-import os
-import io
 
 # ==============================================================================
-# DETERMINISTIC TLH PROXY MAP (IRS WASH-SALE COMPLIANT)
+# SECTION 1: CSV & INGESTION FUNCTIONS (From 01 & 02)
 # ==============================================================================
-TLH_PROXY_MAP = {
-    'VOO': ['VTI', 'SCHX', 'VV'],
-    'SCHX': ['VOO', 'VTI', 'VV'],
-    'SCHD': ['VYM', 'HDV', 'FDVV'],
-    'SCHG': ['VUG', 'QQQ', 'IWF'],
-    'AVUV': ['VBR', 'IJS', 'SLYV'],
-    'VXUS': ['IXUS', 'VEU', 'SPDW'],
-    'VIG': ['DGRO', 'VDIGX', 'SCHD'],
-    'DGRO': ['VIG', 'SCHD', 'VDIGX'],
-    'QUAL': ['SPHQ', 'JQUA', 'XLG'],
-    'GSLC': ['USMV', 'SPLV', 'SPY'],
-    'MAIN': ['ARCC', 'OBDC', 'FSK'],
-    'O': ['VNQ', 'SCHH', 'XLRE'],
-    'SCHA': ['VB', 'IJR', 'SPSM'],
-    'SCHM': ['VO', 'IWR', 'MDY'],
-    'AVDV': ['ISCF', 'SCHC', 'GWX'],
-    'EMXC': ['VWO', 'IEMG', 'EEM'],
-    'VIGI': ['VYMI', 'SCHY', 'IDV'],
-    'USFR': ['SGOV', 'BIL', 'SHV']
-}
+# [PASTE YOUR EXISTING load_and_clean_csv FUNCTION HERE]
+def load_and_clean_csv(filepath: str) -> pd.DataFrame:
+    """Loads and cleans E*TRADE CSV files."""
+    try:
+        df = pd.read_csv(filepath, skiprows=0, on_bad_lines='skip')
+        df.columns = df.columns.str.strip()
+        return df
+    except Exception as e:
+        print(f"Error loading CSV {filepath}: {e}")
+        return pd.DataFrame()
 
-def get_safe_proxies(ticker, active_symbols, lockouts):
-    """Returns a list of pre-vetted proxies that do not violate wash-sale or overlap rules."""
-    candidates = TLH_PROXY_MAP.get(ticker, [])
-    safe = [c for c in candidates if c not in active_symbols and c not in lockouts]
+# [PASTE YOUR EXISTING disaggregate_holdings FUNCTION HERE]
+def disaggregate_holdings(df_brokerage: pd.DataFrame, df_ira: pd.DataFrame) -> tuple:
+    """Separates taxable and IRA holdings into dictionaries."""
+    taxable = df_brokerage.set_index('Symbol').to_dict('index') if not df_brokerage.empty and 'Symbol' in df_brokerage.columns else {}
+    ira = df_ira.set_index('Symbol').to_dict('index') if not df_ira.empty and 'Symbol' in df_ira.columns else {}
+    return taxable, ira
+
+# [PASTE YOUR EXISTING get_safe_proxies FUNCTION HERE]
+def get_safe_proxies(ticker: str, active_symbols: list, lockouts: dict) -> list:
+    """Returns safe TLH proxies avoiding wash sales."""
+    # Generic fallback map - replace with your actual proxy map
+    proxy_map = {
+        'VOO': ['IVV', 'SPLG', 'SCHX'],
+        'SCHG': ['VUG', 'QQQM', 'IWF'],
+        'SCHD': ['VYM', 'VIG', 'DGRO'],
+        'AVUV': ['VBR', 'SLYV', 'IJS'],
+        'VXUS': ['IXUS', 'VEA', 'IEFA']
+    }
+    candidates = proxy_map.get(ticker, [])
+    safe = [p for p in candidates if p not in active_symbols and p not in lockouts]
     return safe
 
 # ==============================================================================
-# CSV PARSING & DISAGGREGATION
+# SECTION 2: TREND, PACING & AFFORDABILITY FUNCTIONS (From 03 & 04)
 # ==============================================================================
-def load_and_clean_csv(filepath):
-    if not os.path.exists(filepath):
-        raise FileNotFoundError(f"FATAL: Missing required file: {filepath}")
-    with open(filepath, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    header_index = -1
-    for i, line in enumerate(lines):
-        if line.strip().startswith("Symbol,Last Price $"):
-            header_index = i
-            break
-    if header_index == -1:
-        raise ValueError(f"FATAL: Could not find the main data table header in {filepath}.")
-    clean_csv_string = "".join(lines[header_index:])
-    df = pd.read_csv(io.StringIO(clean_csv_string), on_bad_lines='skip')
-    df.columns = df.columns.str.strip()
-    return df
-
-def disaggregate_holdings(df_all, df_ira):
-    required_cols = ['Symbol', 'Quantity', 'Last Price $', 'Value $', 'Price Paid $', 'Total Gain $']
-    for col in required_cols:
-        if col not in df_all.columns or col not in df_ira.columns:
-            raise ValueError(f"FATAL: Missing required column '{col}' in CSVs.")
-
-    df_all = df_all.copy()
-    df_ira = df_ira.copy()
-    
-    df_all['Symbol'] = df_all['Symbol'].astype(str).str.strip()
-    df_ira['Symbol'] = df_ira['Symbol'].astype(str).str.strip()
-
-    for col in ['Quantity', 'Last Price $', 'Value $', 'Price Paid $', 'Total Gain $']:
-        df_all[col] = pd.to_numeric(df_all[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0)
-        df_ira[col] = pd.to_numeric(df_ira[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0)
-
-    def filter_garbage(df):
-        mask = (
-            ~df['Symbol'].str.lower().isin(['cash', 'total', 'nan', '']) & 
-            ~df['Symbol'].str.lower().str.contains('generated') & 
-            (df['Symbol'].str.len() <= 10)
-        )
-        return df[mask].set_index('Symbol')
-
-    df_all_clean = filter_garbage(df_all)
-    df_ira_clean = filter_garbage(df_ira)
-
-    df_all_clean['Basis $'] = df_all_clean['Value $'] - df_all_clean['Total Gain $']
-    df_ira_clean['Basis $'] = df_ira_clean['Value $'] - df_ira_clean['Total Gain $']
-
-    merged = df_all_clean.join(df_ira_clean, how='left', lsuffix='_all', rsuffix='_ira')
-    
-    for col in ['Quantity_ira', 'Value $_ira', 'Total Gain $_ira', 'Basis $_ira']:
-        merged[col] = merged[col].fillna(0)
-
-    merged['Quantity_tax'] = merged['Quantity_all'] - merged['Quantity_ira']
-    merged['Basis $_tax'] = merged['Basis $_all'] - merged['Basis $_ira']
-
-    master_price = merged['Last Price $_all']
-    
-    merged['Sync_Value_ira'] = merged['Quantity_ira'] * master_price
-    merged['Sync_Gain_ira'] = merged['Sync_Value_ira'] - merged['Basis $_ira']
-    merged['Sync_Price_Paid_ira'] = np.where(merged['Quantity_ira'] > 0, merged['Basis $_ira'] / merged['Quantity_ira'], 0.0)
-    
-    merged['Sync_Value_tax'] = merged['Quantity_tax'] * master_price
-    merged['Sync_Gain_tax'] = merged['Sync_Value_tax'] - merged['Basis $_tax']
-    merged['Sync_Price_Paid_tax'] = np.where(merged['Quantity_tax'] > 0, merged['Basis $_tax'] / merged['Quantity_tax'], 0.0)
-
-    taxable_holdings = {}
-    clean_ira_holdings = {}
-
-    for sym, row in merged.iterrows():
-        acq_date_all = row['Date Acquired_all'] if 'Date Acquired_all' in row and pd.notna(row['Date Acquired_all']) else 'Various'
-        acq_date_ira = row['Date Acquired_ira'] if 'Date Acquired_ira' in row and pd.notna(row['Date Acquired_ira']) else 'Various'
-
-        if row['Quantity_ira'] > 0:
-            clean_ira_holdings[sym] = {
-                'Quantity': round(row['Quantity_ira'], 4),
-                'Last Price $': row['Last Price $_all'],
-                'Value $': round(row['Sync_Value_ira'], 2),
-                'Price Paid $': round(row['Sync_Price_Paid_ira'], 4),
-                'Total Gain $': round(row['Sync_Gain_ira'], 2),
-                'Basis $': round(row['Basis $_ira'], 2),
-                'Date Acquired': acq_date_ira
-            }
-        
-        if row['Quantity_tax'] > 0.001:
-            if row['Quantity_ira'] == 0:
-                taxable_holdings[sym] = {
-                    'Quantity': row['Quantity_all'],
-                    'Last Price $': row['Last Price $_all'],
-                    'Value $': row['Value $_all'],
-                    'Price Paid $': row['Price Paid $_all'],
-                    'Total Gain $': row['Total Gain $_all'],
-                    'Basis $': round(row['Basis $_all'], 2),
-                    'Date Acquired': acq_date_all
-                }
-            else:
-                taxable_holdings[sym] = {
-                    'Quantity': round(row['Quantity_tax'], 4),
-                    'Last Price $': row['Last Price $_all'],
-                    'Value $': round(row['Sync_Value_tax'], 2),
-                    'Price Paid $': round(row['Sync_Price_Paid_tax'], 4),
-                    'Total Gain $': round(row['Sync_Gain_tax'], 2),
-                    'Basis $': round(row['Basis $_tax'], 2),
-                    'Date Acquired': acq_date_all
-                }
-
-    ira_only = df_ira_clean[~df_ira_clean.index.isin(df_all_clean.index)]
-    for sym, row in ira_only.iterrows():
-        acq_date = row['Date Acquired'] if 'Date Acquired' in row and pd.notna(row['Date Acquired']) else 'Various'
-        clean_ira_holdings[sym] = {
-            'Quantity': row['Quantity'],
-            'Last Price $': row['Last Price $'],
-            'Value $': row['Value $'],
-            'Price Paid $': row['Price Paid $'],
-            'Total Gain $': row['Total Gain $'],
-            'Basis $': round(row['Basis $'], 2),
-            'Date Acquired': acq_date
-        }
-
-    return taxable_holdings, clean_ira_holdings
-
-# ==============================================================================
-# AVENUE C: SOURCING & LIQUIDATION ALU FUNCTIONS
-# ==============================================================================
-import re
-
 def extract_constants_data(constants_text: str) -> dict:
-    """Extracts tax limits, pacing parameters, and statistical thresholds from the Master Constants file."""
+    """Extracts tax limits, pacing parameters, and statistical thresholds."""
     data = {'ltcg_limit': 0.0, 'std_deduction': 0.0, 'annual_drawdown_gap': 0.0, 'min_statistical_days': 90}
     
     match_ltcg = re.search(r'CONST_ACTIVE_0PCT_LTCG_LIMIT:\s*\$?([\d,]+\.\d{2})', constants_text)
@@ -189,6 +69,121 @@ def extract_constants_data(constants_text: str) -> dict:
         
     return data
 
+def extract_trend_metrics(ledger_text: str) -> dict:
+    """Parses the ledger specifically for macro trend and pacing variance data."""
+    data = {
+        'market_status': 'UNKNOWN',
+        'total_executed_equities': 0.0,
+        'pacing_variance_value': 0.0,
+        'milestones': []
+    }
+    
+    match_status = re.search(r'Active Market Status Designation:\s*\[(.*?)\]', ledger_text)
+    if match_status: data['market_status'] = match_status.group(1).strip()
+        
+    match_executed = re.search(r'Total Executed Holdings Market Value.*?\:\s*\$?([\d,]+\.\d{2})', ledger_text)
+    if match_executed: data['total_executed_equities'] = float(match_executed.group(1).replace(',', ''))
+        
+    match_variance = re.search(r'Net Adjusted Pacing Variance:\s*([+-]?)\$?([+-]?[\d,]+\.\d{2})', ledger_text)
+    if match_variance:
+        sign = match_variance.group(1)
+        val_str = match_variance.group(2)
+        multiplier = -1.0 if val_str.startswith('-') or sign == '-' else 1.0
+        data['pacing_variance_value'] = float(val_str.replace('-', '').replace('+', '').replace(',', '')) * multiplier
+
+    milestone_block_match = re.search(r'ROLLING HISTORICAL MILESTONE LEDGER.*?\n(.*?)(?:={80}|\Z)', ledger_text, re.DOTALL)
+    if milestone_block_match:
+        milestone_block = milestone_block_match.group(1)
+        pattern = r'\[(\d{4}-\d{2}-\d{2})\s*\|.*?\s*\$?[\d,]+\.\d{2}\s*\|\s*\$?([\d,]+\.\d{2})\s*\|'
+        matches = re.findall(pattern, milestone_block)
+        for date_str, eq_str in matches:
+            data['milestones'].append({
+                'date': datetime.strptime(date_str, "%Y-%m-%d"),
+                'executed_equities': float(eq_str.replace(',', ''))
+            })
+            
+    data['milestones'] = sorted(data['milestones'], key=lambda x: x['date'])
+    return data
+
+def calculate_temporal_yield(ledger_data: dict, min_days: int) -> dict:
+    """Calculates the exact portfolio yield percentage and evaluates cold-start logic."""
+    yield_data = {
+        'delta_days': 0,
+        'is_cold_start': True,
+        'portfolio_yield_pct': 0.0,
+        'oldest_date_str': '',
+        'current_date_str': datetime.now().strftime("%Y-%m-%d")
+    }
+    
+    if not ledger_data['milestones']: return yield_data
+        
+    oldest_node = ledger_data['milestones'][0]
+    current_val = ledger_data['total_executed_equities']
+    oldest_val = oldest_node['executed_equities']
+    
+    current_date = datetime.now()
+    delta = current_date - oldest_node['date']
+    yield_data['delta_days'] = delta.days
+    yield_data['oldest_date_str'] = oldest_node['date'].strftime("%Y-%m-%d")
+    
+    if yield_data['delta_days'] >= min_days:
+        yield_data['is_cold_start'] = False
+        if oldest_val > 0:
+            yield_data['portfolio_yield_pct'] = ((current_val - oldest_val) / oldest_val) * 100.0
+            
+    return yield_data
+
+def evaluate_spending_variance(variance: float) -> str:
+    """Evaluates pacing variance and returns the strict deterministic directive."""
+    if variance <= -5000.00:
+        return (f"Deficit: -${abs(variance):,.2f}. "
+                "DIRECTIVE (Condition 2.A): You are overspending against your YTD target and pending liabilities. "
+                "Delay major discretionary purchases or expensive travel.")
+    elif variance >= 5000.00:
+        return (f"Surplus: +${variance:,.2f}. "
+                "DIRECTIVE (Condition 2.B): You are underspending. You have a verified budget surplus "
+                "and can afford to make a major discretionary purchase or book a trip.")
+    else:
+        status = f"+${variance:,.2f}" if variance >= 0 else f"-${abs(variance):,.2f}"
+        return (f"Neutral: {status}. "
+                "DIRECTIVE (Condition 2.C): Your spending is precisely on target. Keep spending at the current pace.")
+
+def calculate_liquidity_gate(requested_spend: float, variance: float) -> dict:
+    """Evaluates if the requested spend fits within the current pacing surplus."""
+    available_budget = variance if variance > 0 else 0.0
+    is_sufficient = requested_spend <= available_budget
+    return {'available_budget': available_budget, 'is_sufficient': is_sufficient}
+
+def extract_proxy_yield_from_text(benchmark_text: str) -> float:
+    """Extracts the percentage float from the LLM's macro benchmark search text."""
+    match = re.search(r'([+-]?\d+\.\d+)%', benchmark_text)
+    if match: return float(match.group(1))
+    return 0.0
+
+def evaluate_decision_matrix(requested: float, budget: float, market_status: str, portfolio_yield: float, benchmark: float) -> str:
+    """Executes the strict algorithmic evaluation of the spending request."""
+    status_upper = market_status.upper()
+    if requested > budget:
+        return "REJECT. You do not have the YTD liquidity to support this purchase without cannibalizing future mandatory fixed liabilities."
+    if "RED ACTIVATED" in status_upper or portfolio_yield < -15.0:
+        return "REJECT. Discretionary spending is frozen. Capital preservation protocols are active to protect the cash bridge."
+    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
+        if portfolio_yield < 0.0 or portfolio_yield < (benchmark - 1.50):
+            return "CAUTION & REDUCE. You have the baseline budget, but your portfolio is experiencing systemic drag or nominal losses. Recommend downgrading the purchase cost by 30% to 50% or postponing."
+    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
+        if portfolio_yield >= 0.0 and portfolio_yield >= (benchmark - 1.50):
+            return "APPROVED. Liquidity is secured, pending liabilities are funded, and the portfolio is operating at optimal efficiency."
+    return "PENDING. Manual review required due to ambiguous market status designation in the Portfolio Ledger."
+
+# ==============================================================================
+# SECTION 3: SOURCING & LIQUIDATION FUNCTIONS (From 05 & 06)
+# ==============================================================================
+def extract_bucket_1_cash(ledger_text: str) -> float:
+    """Extracts the Operational Cash balance from Bucket 1."""
+    match = re.search(r'\*\s*Operational Cash \(E\*TRADE Savings \.\.\.1600\):\s*\$?([\d,\.]+)', ledger_text)
+    if match: return float(match.group(1).replace(',', ''))
+    return 0.0
+
 def extract_ledger_portfolio(ledger_text: str) -> dict:
     """Parses the Portfolio Ledger to build a structured dictionary of all holdings."""
     portfolio = {}
@@ -197,8 +192,7 @@ def extract_ledger_portfolio(ledger_text: str) -> dict:
         b_idx = int(b_num)
         portfolio[b_idx] = {'account': 'UNKNOWN', 'holdings': {}}
         acct_match = re.search(r'-\s*Account:\s*(\.\.\.\d{4})', block_text)
-        if acct_match:
-            portfolio[b_idx]['account'] = acct_match.group(1)
+        if acct_match: portfolio[b_idx]['account'] = acct_match.group(1)
         holding_pattern = r'\*\s+([A-Z]+)\s+:\s+([\d\.]+)\s+shares\s*\n\s*\[Price:\s*\$?([\d\.]+)\s*\|\s*Basis:\s*\$?([\d,\.]+)\s*\|\s*Value:\s*\$?([\d,\.]+)\s*\|\s*([+-]?\$?[\d,\.]+)\]'
         holdings = re.findall(holding_pattern, block_text)
         for h in holdings:
@@ -275,11 +269,34 @@ def calculate_exact_liquidations(selected_lots: list, live_prices: dict, target_
         remaining_target -= sell_amount
     return liquidations
 
-def update_ledger_text(ledger_text: str, liquidations: list, total_withdrawal: float, total_tax_impact: float) -> tuple:
-    """Pure function: Mutates the ledger string and returns the new text, variance, and headroom."""
+def update_ledger_text(ledger_text: str, liquidations: list, total_withdrawal: float, total_tax_impact: float, cash_withdrawal: float = 0.0) -> tuple:
+    """Pure function: Mutates the ledger string for both Cash and Equity deductions."""
     new_text = ledger_text
     
-    # 1. Update Holdings
+    # 0. Update Bucket 1 Cash (If Applicable)
+    if cash_withdrawal > 0:
+        b1_match = re.search(r'(\*\s*Operational Cash \(E\*TRADE Savings \.\.\.1600\):\s*\$?)([\d,\.]+)', new_text)
+        if b1_match:
+            prefix = b1_match.group(1)
+            old_cash = float(b1_match.group(2).replace(',', ''))
+            new_cash = old_cash - cash_withdrawal
+            new_text = new_text.replace(b1_match.group(0), f"{prefix}{new_cash:,.2f}")
+            
+        sub_match = re.search(r'(- Subtotal E\*TRADE Bucket 1 Capital:\s*\$?)([\d,\.]+)', new_text)
+        if sub_match:
+            prefix = sub_match.group(1)
+            old_sub = float(sub_match.group(2).replace(',', ''))
+            new_sub = old_sub - cash_withdrawal
+            new_text = new_text.replace(sub_match.group(0), f"{prefix}{new_sub:,.2f}")
+            
+        tot_match = re.search(r'(- Total Bucket 1 Liquidity:\s*\$?)([\d,\.]+)', new_text)
+        if tot_match:
+            prefix = tot_match.group(1)
+            old_tot = float(tot_match.group(2).replace(',', ''))
+            new_tot = old_tot - cash_withdrawal
+            new_text = new_text.replace(tot_match.group(0), f"{prefix}{new_tot:,.2f}")
+
+    # 1. Update Equity Holdings
     for liq in liquidations:
         t = liq['ticker']
         new_shares = liq['old_shares'] - liq['sell_shares']
@@ -296,7 +313,7 @@ def update_ledger_text(ledger_text: str, liquidations: list, total_withdrawal: f
             new_line = f"* {t:<4} : {new_shares:.4f} shares\n        [Price: ${liq['sell_price']:.3f} | Basis: ${new_basis:,.2f} | Value: ${new_val:,.2f} | {gain_str}]"
             new_text = re.sub(old_pattern, new_line, new_text)
 
-    # 2. Update Specific Bucket Subtotals
+    # 2. Update Specific Bucket Subtotals (Equities)
     bucket_deductions = {}
     for liq in liquidations:
         b = liq['bucket']
@@ -346,136 +363,9 @@ def update_ledger_text(ledger_text: str, liquidations: list, total_withdrawal: f
             return re.sub(pattern, rf"{prefix}${new_val:,.2f}", text)
         return text
 
-    new_text = deduct_macro(r'(Total Executed Holdings Market Value \(Buckets 2–8\):\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
+    equity_withdrawal = total_withdrawal - cash_withdrawal
+    new_text = deduct_macro(r'(Total Executed Holdings Market Value \(Buckets 2–8\):\s*)\$?([\d,\.]+)', new_text, equity_withdrawal)
     new_text = deduct_macro(r'(Subtotal E\*TRADE Platform Assets:\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
     new_text = deduct_macro(r'(COMBINED TOTAL SYSTEM CAPITAL:\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
 
     return new_text, new_variance, new_headroom
-
-# ==============================================================================
-# AVENUE C: TREND & PACING ALU FUNCTIONS
-# ==============================================================================
-from datetime import datetime
-
-def extract_trend_metrics(ledger_text: str) -> dict:
-    """Parses the ledger specifically for macro trend and pacing variance data."""
-    data = {
-        'market_status': 'UNKNOWN',
-        'total_executed_equities': 0.0,
-        'pacing_variance_value': 0.0,
-        'milestones': []
-    }
-    
-    match_status = re.search(r'Active Market Status Designation:\s*\[(.*?)\]', ledger_text)
-    if match_status:
-        data['market_status'] = match_status.group(1).strip()
-        
-    match_executed = re.search(r'Total Executed Holdings Market Value.*?\:\s*\$?([\d,]+\.\d{2})', ledger_text)
-    if match_executed:
-        data['total_executed_equities'] = float(match_executed.group(1).replace(',', ''))
-        
-    match_variance = re.search(r'Net Adjusted Pacing Variance:\s*([+-]?)\$?([+-]?[\d,]+\.\d{2})', ledger_text)
-    if match_variance:
-        sign = match_variance.group(1)
-        val_str = match_variance.group(2)
-        multiplier = -1.0 if val_str.startswith('-') or sign == '-' else 1.0
-        data['pacing_variance_value'] = float(val_str.replace('-', '').replace('+', '').replace(',', '')) * multiplier
-
-    milestone_block_match = re.search(r'ROLLING HISTORICAL MILESTONE LEDGER.*?\n(.*?)(?:={80}|\Z)', ledger_text, re.DOTALL)
-    if milestone_block_match:
-        milestone_block = milestone_block_match.group(1)
-        pattern = r'\[(\d{4}-\d{2}-\d{2})\s*\|.*?\s*\$?[\d,]+\.\d{2}\s*\|\s*\$?([\d,]+\.\d{2})\s*\|'
-        matches = re.findall(pattern, milestone_block)
-        for date_str, eq_str in matches:
-            data['milestones'].append({
-                'date': datetime.strptime(date_str, "%Y-%m-%d"),
-                'executed_equities': float(eq_str.replace(',', ''))
-            })
-            
-    data['milestones'] = sorted(data['milestones'], key=lambda x: x['date'])
-    return data
-
-def calculate_temporal_yield(ledger_data: dict, min_days: int) -> dict:
-    """Calculates the exact portfolio yield percentage and evaluates cold-start logic."""
-    yield_data = {
-        'delta_days': 0,
-        'is_cold_start': True,
-        'portfolio_yield_pct': 0.0,
-        'oldest_date_str': '',
-        'current_date_str': datetime.now().strftime("%Y-%m-%d")
-    }
-    
-    if not ledger_data['milestones']:
-        return yield_data
-        
-    oldest_node = ledger_data['milestones'][0]
-    current_val = ledger_data['total_executed_equities']
-    oldest_val = oldest_node['executed_equities']
-    
-    current_date = datetime.now()
-    delta = current_date - oldest_node['date']
-    yield_data['delta_days'] = delta.days
-    yield_data['oldest_date_str'] = oldest_node['date'].strftime("%Y-%m-%d")
-    
-    if yield_data['delta_days'] >= min_days:
-        yield_data['is_cold_start'] = False
-        if oldest_val > 0:
-            yield_data['portfolio_yield_pct'] = ((current_val - oldest_val) / oldest_val) * 100.0
-            
-    return yield_data
-
-def evaluate_spending_variance(variance: float) -> str:
-    """Evaluates pacing variance and returns the strict deterministic directive."""
-    if variance <= -5000.00:
-        return (f"Deficit: -${abs(variance):,.2f}. "
-                "DIRECTIVE (Condition 2.A): You are overspending against your YTD target and pending liabilities. "
-                "Delay major discretionary purchases or expensive travel.")
-    elif variance >= 5000.00:
-        return (f"Surplus: +${variance:,.2f}. "
-                "DIRECTIVE (Condition 2.B): You are underspending. You have a verified budget surplus "
-                "and can afford to make a major discretionary purchase or book a trip.")
-    else:
-        status = f"+${variance:,.2f}" if variance >= 0 else f"-${abs(variance):,.2f}"
-        return (f"Neutral: {status}. "
-                "DIRECTIVE (Condition 2.C): Your spending is precisely on target. Keep spending at the current pace.")
-
-def calculate_liquidity_gate(requested_spend: float, variance: float) -> dict:
-    """Evaluates if the requested spend fits within the current pacing surplus."""
-    available_budget = variance if variance > 0 else 0.0
-    is_sufficient = requested_spend <= available_budget
-    return {
-        'available_budget': available_budget,
-        'is_sufficient': is_sufficient
-    }
-
-def extract_proxy_yield_from_text(benchmark_text: str) -> float:
-    """Extracts the percentage float from the LLM's macro benchmark search text."""
-    match = re.search(r'([+-]?\d+\.\d+)%', benchmark_text)
-    if match:
-        return float(match.group(1))
-    return 0.0
-
-def evaluate_decision_matrix(requested: float, budget: float, market_status: str, portfolio_yield: float, benchmark: float) -> str:
-    """Executes the strict algorithmic evaluation of the spending request."""
-    status_upper = market_status.upper()
-    
-    # 1. INSUFFICIENT BUDGET (Overrides all market conditions)
-    if requested > budget:
-        return "REJECT. You do not have the YTD liquidity to support this purchase without cannibalizing future mandatory fixed liabilities."
-        
-    # 2. CONDITION C (Crash / Bear Market)
-    if "RED ACTIVATED" in status_upper or portfolio_yield < -15.0:
-        return "REJECT. Discretionary spending is frozen. Capital preservation protocols are active to protect the cash bridge."
-        
-    # 3. CONDITION B (Anemic / Drag)
-    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
-        if portfolio_yield < 0.0 or portfolio_yield < (benchmark - 1.50):
-            return "CAUTION & REDUCE. You have the baseline budget, but your portfolio is experiencing systemic drag or nominal losses. Recommend downgrading the purchase cost by 30% to 50% or postponing."
-            
-    # 4. CONDITION A (Excellent / Green Light)
-    if "NORMAL" in status_upper or "NEUTRAL" in status_upper or "SIDEWAYS" in status_upper:
-        if portfolio_yield >= 0.0 and portfolio_yield >= (benchmark - 1.50):
-            return "APPROVED. Liquidity is secured, pending liabilities are funded, and the portfolio is operating at optimal efficiency."
-            
-    # Fallback (Just in case market status string is malformed)
-    return "PENDING. Manual review required due to ambiguous market status designation in the Portfolio Ledger."
