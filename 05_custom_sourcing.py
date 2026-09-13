@@ -154,7 +154,7 @@ def fiduciary_audit_loop(client, quant_lots: list, search_data: str, custom_inst
     If the algorithm's choice is sound, validate it.
     
     [STRICT NEGATIVE CONSTRAINT]
-    Do NOT recommend sourcing funds from Bucket 1 (Cash/Liquidity). The user has explicitly chosen to preserve cash and execute an equity liquidation. Your recommendation MUST be an equity liquidation from the available taxable buckets.
+    Do NOT recommend sourcing funds from Bucket 1 (Cash/Liquidity) or Bucket 6 (IRA). The user has explicitly chosen to preserve cash and execute an equity liquidation. Your recommendation MUST be an equity liquidation from the available taxable buckets.
     
     Output your analysis strictly formatted as an 80-character line-wrapped Markdown text block.
     """
