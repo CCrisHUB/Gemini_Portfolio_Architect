@@ -2,10 +2,10 @@
 #"""
 #Dynamic Custom Sourcing & Liquidation Engine
 #Date: 2026-09-15
-#Version: 2.0.3 (LLM Cash Constraint & UX Semantic Polish)
+#Version: 2.0.4 (UX Polish: Streamlined Execution Prompt)
 #Role: Executes tax-optimized liquidations, live macro telemetry, LLM Fiduciary Audit, and ledger updates.
 #"""
-__version__ = "2.0.3"
+__version__ = "2.0.4"
 __date__ = "2026-09-15"
 
 import os
@@ -335,18 +335,19 @@ def main():
     search_data = gather_live_macro_data(client, quant_baseline_lots)
     chat_session, chat_transcript = fiduciary_audit_loop(client, quant_baseline_lots, search_data, custom_instructions, ledger_text, withdrawal_amount)
     
-    # 5. Human-in-the-Loop Override Trapping
+    # 5. Human-in-the-Loop Override Trapping (UX FIX APPLIED HERE)
     baseline_tickers = ", ".join([lot['ticker'] for lot in quant_baseline_lots])
     
     print(f"\n{ANSI_CYAN}" + "="*60)
     print(" FINAL EXECUTION CONFIRMATION")
     print("="*60 + f"{ANSI_RESET}")
-    print(f"Press ENTER to execute the original Quant Baseline: {ANSI_YELLOW}[{baseline_tickers}]{ANSI_RESET}")
-    print("OR type the specific tickers you wish to liquidate instead based on the AI's advice (e.g., 'SCHG').")
+    print(f"The Quant Baseline selected: {ANSI_YELLOW}[{baseline_tickers}]{ANSI_RESET}\n")
+    print("To execute the Baseline, press ENTER.")
+    print("To execute the AI's advice, type the ticker(s) (e.g., SCHG) and press ENTER.")
     
     final_lots = []
     while True:
-        override_input = input(f"\n{ANSI_YELLOW}Override Tickers (or ENTER to accept baseline): {ANSI_RESET}").strip().upper()
+        override_input = input(f"\n{ANSI_YELLOW}Your Selection: {ANSI_RESET}").strip().upper()
         if not override_input:
             final_lots = quant_baseline_lots
             print(f"{ANSI_GREEN}[System] Baseline [{baseline_tickers}] accepted. Proceeding with execution...{ANSI_RESET}")
