@@ -165,3 +165,182 @@ def disaggregate_holdings(df_all, df_ira):
         }
 
     return taxable_holdings, clean_ira_holdings
+
+# ==============================================================================
+# AVENUE C: SOURCING & LIQUIDATION ALU FUNCTIONS
+# ==============================================================================
+import re
+
+def extract_constants_data(constants_text: str) -> dict:
+    """Extracts tax limits and pacing parameters from the Master Constants file."""
+    data = {'ltcg_limit': 0.0, 'std_deduction': 0.0, 'annual_drawdown_gap': 0.0}
+    match_ltcg = re.search(r'CONST_ACTIVE_0PCT_LTCG_LIMIT:\s*\$?([\d,]+\.\d{2})', constants_text)
+    if match_ltcg: data['ltcg_limit'] = float(match_ltcg.group(1).replace(',', ''))
+    match_std = re.search(r'CONST_ACTIVE_STD_DEDUCTION:\s*\$?([\d,]+\.\d{2})', constants_text)
+    if match_std: data['std_deduction'] = float(match_std.group(1).replace(',', ''))
+    match_gap = re.search(r'CONST_TARGET_NET_DRAWDOWN_GAP:\s*\$?([\d,]+\.\d{2})', constants_text)
+    if match_gap: data['annual_drawdown_gap'] = float(match_gap.group(1).replace(',', ''))
+    return data
+
+def extract_ledger_portfolio(ledger_text: str) -> dict:
+    """Parses the Portfolio Ledger to build a structured dictionary of all holdings."""
+    portfolio = {}
+    bucket_blocks = re.findall(r'(\[BUCKET (\d)\].*?)(?=\n\[BUCKET|\n={80}|\Z)', ledger_text, re.DOTALL)
+    for block_text, b_num in bucket_blocks:
+        b_idx = int(b_num)
+        portfolio[b_idx] = {'account': 'UNKNOWN', 'holdings': {}}
+        acct_match = re.search(r'-\s*Account:\s*(\.\.\.\d{4})', block_text)
+        if acct_match:
+            portfolio[b_idx]['account'] = acct_match.group(1)
+        holding_pattern = r'\*\s+([A-Z]+)\s+:\s+([\d\.]+)\s+shares\s*\n\s*\[Price:\s*\$?([\d\.]+)\s*\|\s*Basis:\s*\$?([\d,\.]+)\s*\|\s*Value:\s*\$?([\d,\.]+)\s*\|\s*([+-]?\$?[\d,\.]+)\]'
+        holdings = re.findall(holding_pattern, block_text)
+        for h in holdings:
+            ticker, shares, price, basis, val, gain = h
+            gain_val = gain.replace('$', '').replace(',', '').replace('+', '')
+            portfolio[b_idx]['holdings'][ticker] = {
+                'shares': float(shares), 'price': float(price), 'basis': float(basis.replace(',', '')),
+                'value': float(val.replace(',', '')), 'gain': float(gain_val), 'original_text': h
+            }
+    return portfolio
+
+def select_tax_optimized_lots(portfolio: dict, target_amount: float, exemptions: list) -> list:
+    """Flattens the portfolio, excludes exempt buckets, and sorts strictly by percentage loss."""
+    flat_holdings = []
+    for b_idx, b_data in portfolio.items():
+        if b_idx not in exemptions:
+            for ticker, t_data in b_data['holdings'].items():
+                flat_holdings.append({
+                    'ticker': ticker, 'bucket': b_idx, 'account': b_data['account'],
+                    'shares': t_data['shares'], 'basis': t_data['basis'], 'value': t_data['value'],
+                    'gain': t_data['gain'], 'ledger_price': t_data['price']
+                })
+    flat_holdings.sort(key=lambda x: (x['gain'] / x['basis']) if x['basis'] > 0 else 0)
+    
+    selected_lots = []
+    cumulative_value = 0.0
+    for lot in flat_holdings:
+        if cumulative_value >= target_amount: break
+        selected_lots.append(lot)
+        cumulative_value += lot['value']
+    return selected_lots
+
+def get_lots_by_tickers(portfolio: dict, tickers: list, exemptions: list) -> list:
+    """Fetches specific lots if the user overrides the Quant Baseline."""
+    selected_lots = []
+    for b_idx, b_data in portfolio.items():
+        if b_idx not in exemptions:
+            for ticker, t_data in b_data['holdings'].items():
+                if ticker in tickers:
+                    selected_lots.append({
+                        'ticker': ticker, 'bucket': b_idx, 'account': b_data['account'],
+                        'shares': t_data['shares'], 'basis': t_data['basis'], 'value': t_data['value'],
+                        'gain': t_data['gain'], 'ledger_price': t_data['price']
+                    })
+    return selected_lots
+
+def calculate_exact_liquidations(selected_lots: list, live_prices: dict, target_amount: float) -> list:
+    """Calculates exact fractional shares to sell and realized tax impact."""
+    liquidations = []
+    remaining_target = target_amount
+    for lot in selected_lots:
+        if remaining_target <= 0.01: break
+        ticker = lot['ticker']
+        live_price = live_prices[ticker]
+        lot_max_value = lot['shares'] * live_price
+        
+        if lot_max_value <= remaining_target:
+            sell_amount = lot_max_value
+            sell_shares = lot['shares']
+        else:
+            sell_amount = remaining_target
+            sell_shares = remaining_target / live_price
+            
+        basis_per_share = lot['basis'] / lot['shares'] if lot['shares'] > 0 else 0
+        sold_basis = sell_shares * basis_per_share
+        realized_gain = sell_amount - sold_basis
+        
+        liquidations.append({
+            'ticker': ticker, 'bucket': lot['bucket'], 'account': lot['account'],
+            'sell_shares': sell_shares, 'sell_price': live_price, 'sell_amount': sell_amount,
+            'realized_gain': realized_gain, 'old_shares': lot['shares'], 'old_basis': lot['basis'], 
+            'old_value': lot['value'], 'old_gain': lot['gain']
+        })
+        remaining_target -= sell_amount
+    return liquidations
+
+def update_ledger_text(ledger_text: str, liquidations: list, total_withdrawal: float, total_tax_impact: float) -> tuple:
+    """Pure function: Mutates the ledger string and returns the new text, variance, and headroom."""
+    new_text = ledger_text
+    
+    # 1. Update Holdings
+    for liq in liquidations:
+        t = liq['ticker']
+        new_shares = liq['old_shares'] - liq['sell_shares']
+        new_basis = liq['old_basis'] - (liq['sell_shares'] * (liq['old_basis'] / liq['old_shares']))
+        new_val = liq['old_value'] - liq['sell_amount']
+        new_gain = liq['old_gain'] - liq['realized_gain']
+        
+        gain_str = f"+${new_gain:,.2f}" if new_gain >= 0 else f"-${abs(new_gain):,.2f}"
+        old_pattern = rf'\*\s+{t}\s+:\s+[\d\.]+\s+shares\s*\n\s*\[Price:\s*\$?[\d\.]+\s*\|\s*Basis:\s*\$?[\d,\.]+\s*\|\s*Value:\s*\$?[\d,\.]+\s*\|\s*[+-]?\$?[\d,\.]+\]'
+        
+        if new_shares < 0.001:
+            new_text = re.sub(old_pattern + r'\n?', '', new_text)
+        else:
+            new_line = f"* {t:<4} : {new_shares:.4f} shares\n        [Price: ${liq['sell_price']:.3f} | Basis: ${new_basis:,.2f} | Value: ${new_val:,.2f} | {gain_str}]"
+            new_text = re.sub(old_pattern, new_line, new_text)
+
+    # 2. Update Specific Bucket Subtotals
+    bucket_deductions = {}
+    for liq in liquidations:
+        b = liq['bucket']
+        bucket_deductions[b] = bucket_deductions.get(b, 0.0) + liq['sell_amount']
+        
+    for b, amount in bucket_deductions.items():
+        block_match = re.search(rf'\[BUCKET {b}\].*?(?=\n\[BUCKET|\n={80}|\Z)', new_text, re.DOTALL)
+        if block_match:
+            block_text = block_match.group(0)
+            val_match = re.search(r'(- Account Value \(Executed Equities\):\s*)\$?([\d,\.]+)', block_text)
+            if val_match:
+                prefix = val_match.group(1)
+                old_val = float(val_match.group(2).replace(',', ''))
+                new_val = old_val - amount
+                new_block_text = block_text.replace(val_match.group(0), f"{prefix}${new_val:,.2f}")
+                new_text = new_text.replace(block_text, new_block_text)
+
+    # 3. Update Tax Headroom
+    new_headroom = 0.0
+    headroom_match = re.search(r'Remaining 0% LTCG Headroom:\s*([+-]?)\$?([\d,\.]+)', new_text)
+    if headroom_match:
+        sign = -1.0 if headroom_match.group(1) == '-' else 1.0
+        old_headroom = float(headroom_match.group(2).replace(',', '')) * sign
+        new_headroom = old_headroom - total_tax_impact 
+        hr_str = f"+${new_headroom:,.2f}" if new_headroom >= 0 else f"-${abs(new_headroom):,.2f}"
+        new_text = re.sub(r'(Remaining 0% LTCG Headroom:\s*)[+-]?\$?[\d,\.]+', r'\g<1>' + hr_str.replace('\\', '\\\\'), new_text)
+
+    # 4. Update Pacing Variance
+    new_variance = 0.0
+    pacing_match = re.search(r'Net Adjusted Pacing Variance:\s*([+-]?)\$?([+-]?[\d,\.]+)', new_text)
+    if pacing_match:
+        sign = pacing_match.group(1)
+        val_str = pacing_match.group(2)
+        multiplier = -1.0 if val_str.startswith('-') or sign == '-' else 1.0
+        old_variance = float(val_str.replace('-', '').replace('+', '').replace(',', '')) * multiplier
+        new_variance = old_variance - total_withdrawal
+        var_str = f"+${new_variance:,.2f}" if new_variance >= 0 else f"-${abs(new_variance):,.2f}"
+        new_text = re.sub(r'(Net Adjusted Pacing Variance:\s*)[+-]?\$?[+-]?[\d,\.]+', r'\g<1>' + var_str.replace('\\', '\\\\'), new_text)
+
+    # 5. Update Total Capital Macros 
+    def deduct_macro(pattern, text, amount):
+        match = re.search(pattern, text)
+        if match:
+            prefix = match.group(1)
+            old_val = float(match.group(2).replace(',', ''))
+            new_val = old_val - amount
+            return re.sub(pattern, rf"{prefix}${new_val:,.2f}", text)
+        return text
+
+    new_text = deduct_macro(r'(Total Executed Holdings Market Value \(Buckets 2–8\):\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
+    new_text = deduct_macro(r'(Subtotal E\*TRADE Platform Assets:\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
+    new_text = deduct_macro(r'(COMBINED TOTAL SYSTEM CAPITAL:\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
+
+    return new_text, new_variance, new_headroom
