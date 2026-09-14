@@ -1,29 +1,30 @@
 #01_ingestion_engine.py
 #"""
 #Avenue C Ingestion Engine
-#Date: 2026-09-12
-#Version: 2.3.4 (Cosmetic Alignment Enforcement)
+#Date: 2026-09-11
+#Version: 2.4.0 (Decoupled Config & Centralized Archive Sweep)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.4"
-__date__ = "2026-09-12"
+__version__ = "2.4.0"
+__date__ = "2026-09-11"
 
 import os
 import json
 import re
 import glob
 import shutil
+import time
 from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import alu_utils
-
-# Define decoupled directory paths
-DIR_CORE_ACTIVE = "00_CORE_Files"
-DIR_CORE_ARCHIVE = "05_OLD_Core_Files"
-DIR_CSV_ACTIVE = "20_CSV_Downloads_Current"
-DIR_CSV_ARCHIVE = "50_OLD_CSV_Files"
+from alu_utils import (
+    DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE,
+    DIR_CSV_ACTIVE, DIR_CSV_ARCHIVE, DIR_REPORTS,
+    DEEP_ARCHIVE_CORE, DEEP_ARCHIVE_CSV, DEEP_ARCHIVE_REPORTS,
+    deep_archive_sweep
+)
 
 def get_latest_file(directory, pattern):
     files = glob.glob(os.path.join(directory, pattern))
@@ -709,6 +710,12 @@ def main():
             shutil.move(gf, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(gf)))
             
         print("System: Old Core Files and processed CSVs successfully archived.")
+        
+        # === NEW DEEP ARCHIVE SWEEP ===
+        print("\n=== PHASE 6: DEEP ARCHIVE SWEEP ===")
+        deep_archive_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE, days_old=30)
+        deep_archive_sweep(DIR_CSV_ARCHIVE, DEEP_ARCHIVE_CSV, days_old=30)
+        deep_archive_sweep(DIR_REPORTS, DEEP_ARCHIVE_REPORTS, days_old=30)
             
     except Exception as e:
         print(f"\n[FATAL EXECUTION HALT] {e}")
