@@ -1,12 +1,12 @@
 #07_expense_patching.py
 #"""
 #Expense Payload Patching Engine
-#Date: 2026-09-15
-#Version: 1.0.0 (Avenue C Port)
+#Date: 2026-09-11
+#Version: 1.1.0 (Decoupled Config & Centralized Archive Sweep)
 #Role: Injects the Financial Ingestion Payload into Core File 1.
 #"""
-__version__ = "1.0.0"
-__date__ = "2026-09-15"
+__version__ = "1.1.0"
+__date__ = "2026-09-11"
 
 import os
 import sys
@@ -14,6 +14,12 @@ import glob
 import re
 import shutil
 from datetime import datetime
+from alu_utils import (
+    DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE,
+    DIR_CSV_ACTIVE, DIR_CSV_ARCHIVE,
+    DEEP_ARCHIVE_CORE, DEEP_ARCHIVE_CSV,
+    deep_archive_sweep
+)
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -25,14 +31,9 @@ ANSI_CYAN = "\033[96m"
 ANSI_RESET = "\033[0m"
 
 # ==============================================================================
-# MASTER CONFIGURATION & DIRECTORY STRUCTURE
+# DIRECTORY INITIALIZATION
 # ==============================================================================
-BASE_DIR = r"C:\10_Projects\Gemini_Portfolio_Architect"
-CORE_DIR = os.path.join(BASE_DIR, "00_CORE_Files")
-OLD_CORE_DIR = os.path.join(BASE_DIR, "05_OLD_Core_Files")
-PAYLOAD_DIR = os.path.join(BASE_DIR, "20_CSV_Downloads_Current") # Assuming payload drops here
-
-for directory in [CORE_DIR, OLD_CORE_DIR, PAYLOAD_DIR]:
+for directory in [DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE, DIR_CSV_ACTIVE, DIR_CSV_ARCHIVE]:
     os.makedirs(directory, exist_ok=True)
 
 # ==============================================================================
@@ -63,7 +64,7 @@ def main():
     # 1. Locate Files
     print(f"\n{ANSI_CYAN}[System] Locating Core File 1 and Ingestion Payload...{ANSI_RESET}")
     try:
-        constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
+        constants_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt")
         print(f"{ANSI_GREEN}✅ Detected Core File 1: {os.path.basename(constants_file)}{ANSI_RESET}")
     except FileNotFoundError as e:
         print(f"{ANSI_RED}[FATAL ERROR] {e}{ANSI_RESET}")
@@ -71,11 +72,11 @@ def main():
 
     while True:
         try:
-            payload_file = get_latest_file(PAYLOAD_DIR, "Ingestion_Expense_Payload_FINAL_*.txt")
+            payload_file = get_latest_file(DIR_CSV_ACTIVE, "Ingestion_Expense_Payload_FINAL_*.txt")
             print(f"{ANSI_GREEN}✅ Detected Payload: {os.path.basename(payload_file)}{ANSI_RESET}")
             break
         except FileNotFoundError:
-            print(f"\n{ANSI_RED}❌ ERROR: Missing 'Ingestion_Expense_Payload_FINAL_*.txt' in '{PAYLOAD_DIR}'.{ANSI_RESET}")
+            print(f"\n{ANSI_RED}❌ ERROR: Missing 'Ingestion_Expense_Payload_FINAL_*.txt' in '{DIR_CSV_ACTIVE}'.{ANSI_RESET}")
             retry = input(f"{ANSI_CYAN}Place the file in the folder and press ENTER to retry (or type 'exit'): {ANSI_RESET}").strip()
             if retry.lower() == 'exit': sys.exit(0)
 
@@ -111,20 +112,23 @@ def main():
     
     # 5. Save New File
     final_filename = f"GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt"
-    final_filepath = os.path.join(CORE_DIR, final_filename)
+    final_filepath = os.path.join(DIR_CORE_ACTIVE, final_filename)
     
     with open(final_filepath, "w", encoding="utf-8") as f:
         f.write(new_constants_text)
         
     # 6. Clean Room Archiving
     old_constants_name = os.path.basename(constants_file)
-    shutil.move(constants_file, os.path.join(OLD_CORE_DIR, old_constants_name))
+    shutil.move(constants_file, os.path.join(DIR_CORE_ARCHIVE, old_constants_name))
     
     # Move the payload to the old CSV folder to keep the active directory clean
-    old_csv_dir = os.path.join(BASE_DIR, "50_OLD_CSV_Files")
-    os.makedirs(old_csv_dir, exist_ok=True)
-    shutil.move(payload_file, os.path.join(old_csv_dir, os.path.basename(payload_file)))
+    shutil.move(payload_file, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(payload_file)))
     
+    # 7. Deep Archive Sweep
+    print(f"\n{ANSI_CYAN}[System] Executing Deep Archive Sweep...{ANSI_RESET}")
+    deep_archive_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE, days_old=30)
+    deep_archive_sweep(DIR_CSV_ARCHIVE, DEEP_ARCHIVE_CSV, days_old=30)
+
     print(f"\n{ANSI_GREEN}" + "="*60)
     print(f" [SUCCESS] Payload injection successful.")
     print(f" [SUCCESS] Core File 1 Mutated: {final_filename}")
