@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-14
-#Version: 2.3.5 (Native Clean-Room Ingestion & FP Dust Vaporization)
+#Version: 2.3.6 (CSV Header Regex Patch - Bypassing ETRADE Metadata)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.5"
+__version__ = "2.3.6"
 __date__ = "2026-09-14"
 
 import os
@@ -507,8 +507,8 @@ def load_and_clean_csv_native(filepath):
     import io
     with open(filepath, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    s_idx = next((i for i, line in enumerate(lines) if line.startswith("Symbol,")), -1)
-    if s_idx == -1: raise ValueError(f"FATAL: No header in {filepath}")
+    s_idx = next((i for i, line in enumerate(lines) if line.startswith("Symbol,") and "Quantity" in line), -1)
+    if s_idx == -1: raise ValueError(f"FATAL: No header with 'Quantity' found in {filepath}")
     df = pd.read_csv(io.StringIO("".join(lines[s_idx:])), on_bad_lines='skip')
     df.columns = df.columns.str.strip()
     df = df[df['Symbol'].notna()]
@@ -657,7 +657,7 @@ def main():
         if active_cds:
             while True:
                 print("\nCurrent Active CDs Detected:")
-                for i, cd in enumerate(active_cds):
+                for i, enumerate(active_cds):
                     print(f"  {i+1}. {cd['name']}: ${cd['value']:,.2f} [{cd['loc']}]")
                 
                 ans = input("\nAre there any changes to the CD accounts (e.g., a CD matured)? (Y/N): ").strip().upper()
