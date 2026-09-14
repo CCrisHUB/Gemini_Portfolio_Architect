@@ -1,12 +1,12 @@
 #03_trend_and_pacing.py
 #"""
 #Trend Tracking & Financial Pacing Engine
-#Date: 2026-09-15
-#Version: 1.1.0 (ALU Refactor & UX Transparency Upgrade)
+#Date: 2026-09-11
+#Version: 1.2.0 (Decoupled Config & Centralized Archive Sweep)
 #Role: Evaluates temporal yield, cold-start logic, and spending pacing variance.
 #"""
-__version__ = "1.1.0"
-__date__ = "2026-09-15"
+__version__ = "1.2.0"
+__date__ = "2026-09-11"
 
 import os
 import sys
@@ -17,6 +17,12 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import alu_utils
+from alu_utils import (
+    DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE,
+    DIR_CSV_ACTIVE, DIR_CSV_ARCHIVE, DIR_REPORTS,
+    DEEP_ARCHIVE_CORE, DEEP_ARCHIVE_CSV, DEEP_ARCHIVE_REPORTS,
+    deep_archive_sweep
+)
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -32,11 +38,7 @@ ANSI_RESET = "\033[0m"
 # ==============================================================================
 LLM_MODEL_NAME = 'gemini-3.1-pro-preview'
 
-BASE_DIR = r"C:\10_Projects\Gemini_Portfolio_Architect"
-CORE_DIR = os.path.join(BASE_DIR, "00_CORE_Files")
-REPORTS_DIR = os.path.join(BASE_DIR, "70 REPORTS")
-
-for directory in [CORE_DIR, REPORTS_DIR]:
+for directory in [DIR_CORE_ACTIVE, DIR_REPORTS]:
     os.makedirs(directory, exist_ok=True)
 
 # ==============================================================================
@@ -114,9 +116,9 @@ def generate_final_report(client, yield_data: dict, benchmark_text: str, spendin
     
     date_str = datetime.now().strftime("%Y-%m-%d")
     base_name = f"Financial_Trend_and_Pacing_Report_{date_str}"
-    next_version = get_next_version_number(REPORTS_DIR, base_name)
+    next_version = get_next_version_number(DIR_REPORTS, base_name)
     final_filename = f"{base_name}_v{next_version}.txt"
-    final_filepath = os.path.join(REPORTS_DIR, final_filename)
+    final_filepath = os.path.join(DIR_REPORTS, final_filename)
     
     if yield_data['is_cold_start']:
         days_remaining = min_days - yield_data['delta_days']
@@ -214,13 +216,13 @@ def main():
     ledger_file = None
     while True:
         try:
-            constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
-            ledger_file = get_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
+            constants_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt")
+            ledger_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Portfolio_Ledger_*.txt")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(constants_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ledger_file)}{ANSI_RESET}")
             break
         except FileNotFoundError as e:
-            print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{CORE_DIR}'.{ANSI_RESET}")
+            print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{DIR_CORE_ACTIVE}'.{ANSI_RESET}")
             print(f"{ANSI_YELLOW}{e}{ANSI_RESET}")
             user_input = input(f"{ANSI_CYAN}Press ENTER to retry, or type 'exit' to quit: {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
@@ -256,6 +258,12 @@ def main():
         market_status=ledger_data['market_status'],
         min_days=const_data['min_statistical_days']
     )
+    
+    # 5. Deep Archive Sweep
+    print(f"\n{ANSI_CYAN}[System] Executing Deep Archive Sweep...{ANSI_RESET}")
+    deep_archive_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE, days_old=30)
+    deep_archive_sweep(DIR_CSV_ARCHIVE, DEEP_ARCHIVE_CSV, days_old=30)
+    deep_archive_sweep(DIR_REPORTS, DEEP_ARCHIVE_REPORTS, days_old=30)
 
 if __name__ == "__main__":
     main()
