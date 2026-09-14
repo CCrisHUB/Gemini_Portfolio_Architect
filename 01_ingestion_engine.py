@@ -1,12 +1,12 @@
 #01_ingestion_engine.py
 #"""
 #Avenue C Ingestion Engine
-#Date: 2026-09-12
-#Version: 2.3.4 (Cosmetic Alignment Enforcement)
+#Date: 2026-09-14
+#Version: 2.3.5 (Native Clean-Room Ingestion & FP Dust Vaporization)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.4"
-__date__ = "2026-09-12"
+__version__ = "2.3.5"
+__date__ = "2026-09-14"
 
 import os
 import json
@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-import alu_utils
 
 # Define decoupled directory paths
 DIR_CORE_ACTIVE = "00_CORE_Files"
@@ -503,6 +502,45 @@ def extract_all_cash(filepath):
         print(f"Warning: Could not extract cash from {filepath}: {e}")
     return total
 
+def load_and_clean_csv_native(filepath):
+    import pandas as pd
+    import io
+    with open(filepath, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    s_idx = next((i for i, line in enumerate(lines) if line.startswith("Symbol,")), -1)
+    if s_idx == -1: raise ValueError(f"FATAL: No header in {filepath}")
+    df = pd.read_csv(io.StringIO("".join(lines[s_idx:])), on_bad_lines='skip')
+    df.columns = df.columns.str.strip()
+    df = df[df['Symbol'].notna()]
+    df['Symbol'] = df['Symbol'].astype(str).str.replace(r'[^\x20-\x7E]', '', regex=True).str.strip()
+    df = df[~df['Symbol'].isin(['CASH', 'TOTAL', 'nan', ''])]
+    for col in ['Quantity', 'Price Paid $', 'Last Price $', 'Value $', 'Total Gain $']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0.0)
+    if 'Basis $' not in df.columns and 'Price Paid $' in df.columns and 'Quantity' in df.columns:
+        df['Basis $'] = df['Price Paid $'] * df['Quantity']
+    return df
+
+def disaggregate_holdings_native(df_brokerage, df_ira):
+    taxable, ira = {}, {}
+    for _, r in df_ira.iterrows(): ira[r['Symbol']] = r.to_dict()
+    for _, r in df_brokerage.iterrows():
+        sym = r['Symbol']
+        b_qty = float(r.get('Quantity', 0.0))
+        if sym in ira:
+            i_qty = float(ira[sym].get('Quantity', 0.0))
+            net_qty = b_qty - i_qty
+            if net_qty > 0.0001:
+                ratio = net_qty / b_qty
+                t_row = r.to_dict()
+                t_row['Quantity'] = net_qty
+                t_row['Value $'] = float(r.get('Value $', 0.0)) * ratio
+                t_row['Basis $'] = float(r.get('Basis $', 0.0)) * ratio
+                t_row['Total Gain $'] = float(r.get('Total Gain $', 0.0)) * ratio
+                taxable[sym] = t_row
+        elif b_qty > 0.0001: taxable[sym] = r.to_dict()
+    return taxable, ira
+
 def main():
     print("System: Initializing Avenue C Ingestion Engine...")
     try:
@@ -574,10 +612,10 @@ def main():
         
         prev_state['ticker_map'].update(metadata_overrides)
         
-        df_brokerage = alu_utils.load_and_clean_csv(brokerage_csv)
-        df_ira = alu_utils.load_and_clean_csv(ira_csv)
+        df_brokerage = load_and_clean_csv_native(brokerage_csv)
+        df_ira = load_and_clean_csv_native(ira_csv)
         
-        taxable, ira = alu_utils.disaggregate_holdings(df_brokerage, df_ira)
+        taxable, ira = disaggregate_holdings_native(df_brokerage, df_ira)
         
         old_tickers = set(prev_state['ticker_map'].keys())
         new_tickers = set(taxable.keys())
