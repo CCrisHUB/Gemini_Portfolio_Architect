@@ -2,38 +2,66 @@
 #"""
 #Avenue C Deterministic ALU (Arithmetic Logic Unit)
 #Date: 2026-09-15
-#Version: 2.0.0 (Consolidated Math & Parsing Engine)
+#Version: 2.0.1 (System-Wide FP Dust Vaporization & Header Regex)
 #Role: Isolates all deterministic parsing, math, and ledger mutations from the LLM.
 #"""
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __date__ = "2026-09-15"
 
 import re
 from datetime import datetime
 import pandas as pd
+import io
 
 # ==============================================================================
 # SECTION 1: CSV & INGESTION FUNCTIONS (From 01 & 02)
 # ==============================================================================
-# [PASTE YOUR EXISTING load_and_clean_csv FUNCTION HERE]
+
 def load_and_clean_csv(filepath: str) -> pd.DataFrame:
-    """Loads and cleans E*TRADE CSV files."""
+    """Loads and cleans E*TRADE CSV files, applying strict ASCII sanitization and regex bypassing."""
     try:
-        df = pd.read_csv(filepath, skiprows=0, on_bad_lines='skip')
+        with open(filepath, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        s_idx = next((i for i, line in enumerate(lines) if line.startswith("Symbol,") and "Quantity" in line), -1)
+        if s_idx == -1: raise ValueError(f"FATAL: No header with 'Quantity' found in {filepath}")
+        df = pd.read_csv(io.StringIO("".join(lines[s_idx:])), on_bad_lines='skip')
         df.columns = df.columns.str.strip()
+        df = df[df['Symbol'].notna()]
+        df['Symbol'] = df['Symbol'].astype(str).str.replace(r'[^\x20-\x7E]', '', regex=True).str.strip()
+        df = df[~df['Symbol'].isin(['CASH', 'TOTAL', 'nan', ''])]
+        for col in ['Quantity', 'Price Paid $', 'Last Price $', 'Value $', 'Total Gain $']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0.0)
+        if 'Basis $' not in df.columns and 'Price Paid $' in df.columns and 'Quantity' in df.columns:
+            df['Basis $'] = df['Price Paid $'] * df['Quantity']
         return df
     except Exception as e:
         print(f"Error loading CSV {filepath}: {e}")
         return pd.DataFrame()
 
-# [PASTE YOUR EXISTING disaggregate_holdings FUNCTION HERE]
 def disaggregate_holdings(df_brokerage: pd.DataFrame, df_ira: pd.DataFrame) -> tuple:
-    """Separates taxable and IRA holdings into dictionaries."""
-    taxable = df_brokerage.set_index('Symbol').to_dict('index') if not df_brokerage.empty and 'Symbol' in df_brokerage.columns else {}
-    ira = df_ira.set_index('Symbol').to_dict('index') if not df_ira.empty and 'Symbol' in df_ira.columns else {}
+    """Separates taxable and IRA holdings into dictionaries, destroying fractional math dust."""
+    taxable, ira = {}, {}
+    if not df_ira.empty and 'Symbol' in df_ira.columns:
+        for _, r in df_ira.iterrows(): ira[r['Symbol']] = r.to_dict()
+    if not df_brokerage.empty and 'Symbol' in df_brokerage.columns:
+        for _, r in df_brokerage.iterrows():
+            sym = r['Symbol']
+            b_qty = float(r.get('Quantity', 0.0))
+            if sym in ira:
+                i_qty = float(ira[sym].get('Quantity', 0.0))
+                net_qty = b_qty - i_qty
+                if net_qty > 0.0001:
+                    ratio = net_qty / b_qty
+                    t_row = r.to_dict()
+                    t_row['Quantity'] = net_qty
+                    t_row['Value $'] = float(r.get('Value $', 0.0)) * ratio
+                    t_row['Basis $'] = float(r.get('Basis $', 0.0)) * ratio
+                    t_row['Total Gain $'] = float(r.get('Total Gain $', 0.0)) * ratio
+                    taxable[sym] = t_row
+            elif b_qty > 0.0001: taxable[sym] = r.to_dict()
     return taxable, ira
 
-# [PASTE YOUR EXISTING get_safe_proxies FUNCTION HERE]
 def get_safe_proxies(ticker: str, active_symbols: list, lockouts: dict) -> list:
     """Returns safe TLH proxies avoiding wash sales."""
     # Generic fallback map - replace with your actual proxy map
