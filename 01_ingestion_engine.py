@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-14
-#Version: 2.3.6 (CSV Header Regex Patch - Bypassing ETRADE Metadata)
+#Version: 2.3.7 (Syntax Fix - CD Manager Enumerate Loop)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.6"
+__version__ = "2.3.7"
 __date__ = "2026-09-14"
 
 import os
@@ -657,7 +657,7 @@ def main():
         if active_cds:
             while True:
                 print("\nCurrent Active CDs Detected:")
-                for i, enumerate(active_cds):
+                for i, cd in enumerate(active_cds):
                     print(f"  {i+1}. {cd['name']}: ${cd['value']:,.2f} [{cd['loc']}]")
                 
                 ans = input("\nAre there any changes to the CD accounts (e.g., a CD matured)? (Y/N): ").strip().upper()
