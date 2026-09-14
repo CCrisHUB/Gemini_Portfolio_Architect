@@ -1,12 +1,12 @@
 #05_custom_sourcing.py
 #"""
 #Dynamic Custom Sourcing & Liquidation Engine
-#Date: 2026-09-15
-#Version: 2.0.4 (UX Polish: Streamlined Execution Prompt)
+#Date: 2026-09-11
+#Version: 2.1.0 (Decoupled Config & Centralized Archive Sweep)
 #Role: Executes tax-optimized liquidations, live macro telemetry, LLM Fiduciary Audit, and ledger updates.
 #"""
-__version__ = "2.0.4"
-__date__ = "2026-09-15"
+__version__ = "2.1.0"
+__date__ = "2026-09-11"
 
 import os
 import sys
@@ -19,6 +19,12 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import alu_utils
+from alu_utils import (
+    DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE,
+    DIR_CSV_ACTIVE, DIR_CSV_ARCHIVE, DIR_REPORTS,
+    DEEP_ARCHIVE_CORE, DEEP_ARCHIVE_CSV, DEEP_ARCHIVE_REPORTS,
+    deep_archive_sweep
+)
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -34,12 +40,7 @@ ANSI_RESET = "\033[0m"
 # ==============================================================================
 LLM_MODEL_NAME = 'gemini-3.1-pro-preview'
 
-BASE_DIR = r"C:\10_Projects\Gemini_Portfolio_Architect"
-CORE_DIR = os.path.join(BASE_DIR, "00_CORE_Files")
-OLD_CORE_DIR = os.path.join(BASE_DIR, "05_OLD_Core_Files")
-REPORTS_DIR = os.path.join(BASE_DIR, "70 REPORTS")
-
-for directory in [CORE_DIR, OLD_CORE_DIR, REPORTS_DIR]:
+for directory in [DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE, DIR_REPORTS]:
     os.makedirs(directory, exist_ok=True)
 
 # ==============================================================================
@@ -232,9 +233,9 @@ def fetch_live_prices(client, selected_lots: list) -> dict:
 def generate_sourcing_report(liquidations: list, withdrawal_amount: float, total_tax_impact: float, new_var: float, new_hr: float, new_file: str, chat_transcript: str):
     date_str = datetime.now().strftime("%Y-%m-%d")
     base_name = f"Liquidation_and_Sourcing_Plan_{date_str}"
-    next_version = get_next_version_number(REPORTS_DIR, base_name)
+    next_version = get_next_version_number(DIR_REPORTS, base_name)
     final_filename = f"{base_name}_v{next_version}.txt"
-    final_filepath = os.path.join(REPORTS_DIR, final_filename)
+    final_filepath = os.path.join(DIR_REPORTS, final_filename)
     
     report_text = f"""File Name: {final_filename}
 ================================================================================
@@ -313,9 +314,9 @@ def main():
     # 2. Locate & Parse Core Files
     print(f"\n{ANSI_CYAN}[System] Locating Core Files...{ANSI_RESET}")
     try:
-        constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
-        ledger_file = get_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
-        instructions_file = get_latest_file(CORE_DIR, "Fiduciary_Architect_Instructions_*.txt")
+        constants_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt")
+        ledger_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Portfolio_Ledger_*.txt")
+        instructions_file = get_latest_file(DIR_CORE_ACTIVE, "Fiduciary_Architect_Instructions_*.txt")
     except Exception as e:
         print(f"{ANSI_RED}[FATAL ERROR] {e}{ANSI_RESET}"); sys.exit(1)
 
@@ -388,18 +389,24 @@ def main():
     new_text = re.sub(r'Date: \d{4}-\d{2}-\d{2} \(Version \d+\)', f'Date: {today} (Version {new_version})', new_text)
     new_text = re.sub(r'GEM_Retirement_Portfolio_Ledger_\d{4}-\d{2}-\d{2}_v\d+\.txt', f'GEM_Retirement_Portfolio_Ledger_{today}_v{new_version}.txt', new_text)
     
-    final_filepath = os.path.join(CORE_DIR, f"GEM_Retirement_Portfolio_Ledger_{today}_v{new_version}.txt")
+    final_filepath = os.path.join(DIR_CORE_ACTIVE, f"GEM_Retirement_Portfolio_Ledger_{today}_v{new_version}.txt")
     with open(final_filepath, "w", encoding="utf-8") as f:
         f.write(new_text)
     
     # 9. Execute Clean Room Archiving
     old_ledger_name = os.path.basename(ledger_file)
-    shutil.move(ledger_file, os.path.join(OLD_CORE_DIR, old_ledger_name))
+    shutil.move(ledger_file, os.path.join(DIR_CORE_ARCHIVE, old_ledger_name))
     
     # 10. Generate Permanent Report (with Chat Transcript)
     report_path = generate_sourcing_report(liquidations, withdrawal_amount, total_tax_impact, new_var, new_hr, final_filepath, chat_transcript)
     
-    # 11. Final Output
+    # 11. Deep Archive Sweep
+    print(f"\n{ANSI_CYAN}[System] Executing Deep Archive Sweep...{ANSI_RESET}")
+    deep_archive_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE, days_old=30)
+    deep_archive_sweep(DIR_CSV_ARCHIVE, DEEP_ARCHIVE_CSV, days_old=30)
+    deep_archive_sweep(DIR_REPORTS, DEEP_ARCHIVE_REPORTS, days_old=30)
+
+    # 12. Final Output
     print(f"\n{ANSI_GREEN}" + "="*60)
     print(f" [SUCCESS] Portfolio Ledger Mutated: {os.path.basename(final_filepath)}")
     print(f" [SUCCESS] Old Ledger Archived: {old_ledger_name}")
