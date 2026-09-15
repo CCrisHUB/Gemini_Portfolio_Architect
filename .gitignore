@@ -27,6 +27,10 @@ Thumbs.db
 # Ignore all Text files
 *.txt
 
+# EXCEPTION: Track Core Files and Requirements
+!00_CORE_Files/*.txt
+!requirements.txt
+
 # EXCEPTION: Track Core Files
 !00_CORE_Files/*.txt
 
