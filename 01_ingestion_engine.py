@@ -1,12 +1,12 @@
 #01_ingestion_engine.py
 #"""
 #Avenue C Ingestion Engine
-#Date: 2026-09-15
-#Version: 2.3.8 (Architecture Restoration - ALU Dependency Repoint)
+#Date: 2026-09-16
+#Version: 2.4.0 (OneDrive Decoupling & Deep Freeze Sweep)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.3.8"
-__date__ = "2026-09-15"
+__version__ = "2.4.0"
+__date__ = "2026-09-16"
 
 import os
 import json
@@ -19,11 +19,29 @@ from google.genai import types
 from dotenv import load_dotenv
 import alu_utils
 
-# Define decoupled directory paths
-DIR_CORE_ACTIVE = "00_CORE_Files"
-DIR_CORE_ARCHIVE = "05_OLD_Core_Files"
-DIR_CSV_ACTIVE = "20_CSV_Downloads_Current"
-DIR_CSV_ARCHIVE = "50_OLD_CSV_Files"
+# ==============================================================================
+# MASTER CONFIGURATION & DIRECTORY STRUCTURE (GEMINI PORTFOLIO ARCHITECT)
+# ==============================================================================
+GEMINI_ROOT = r"C:\OneDrive\10_Projects\Gemini_Portfolio_Architect"
+GEMINI_DEEP_ARCHIVE_ROOT = r"C:\Archive\Gemini_Portfolio_Architect"
+
+# Active Directories
+DIR_CORE_ACTIVE = os.path.join(GEMINI_ROOT, "00_CORE_Files")
+DIR_CSV_ACTIVE = os.path.join(GEMINI_ROOT, "20_CSV_Downloads_Current")
+DIR_REPORTS_ACTIVE = os.path.join(GEMINI_ROOT, "70_REPORTS")
+DIR_STATEMENTS_ACTIVE = os.path.join(GEMINI_ROOT, "80_STATEMENTS")
+
+# Archive Directories
+DIR_CORE_ARCHIVE = os.path.join(GEMINI_ROOT, "05_OLD_Core_Files")
+DIR_CSV_ARCHIVE = os.path.join(GEMINI_ROOT, "50_OLD_CSV_Files")
+DIR_REPORTS_ARCHIVE = os.path.join(GEMINI_ROOT, "75_OLD_REPORTS")
+DIR_STATEMENTS_ARCHIVE = os.path.join(GEMINI_ROOT, "85_OLD_STATEMENTS")
+
+# Deep Archive Directories
+DEEP_ARCHIVE_CORE = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "05_OLD_Core_Files")
+DEEP_ARCHIVE_CSV = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "50_OLD_CSV_Files")
+DEEP_ARCHIVE_REPORTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "75_OLD_REPORTS")
+DEEP_ARCHIVE_STATEMENTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "85_OLD_STATEMENTS")
 
 def get_latest_file(directory, pattern):
     files = glob.glob(os.path.join(directory, pattern))
@@ -709,6 +727,13 @@ def main():
             shutil.move(gf, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(gf)))
             
         print("System: Old Core Files and processed CSVs successfully archived.")
+        
+        print("\n=== PHASE 6: 30-DAY DEEP FREEZE SWEEP ===")
+        core_swept = alu_utils.execute_deep_freeze_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE)
+        csv_swept = alu_utils.execute_deep_freeze_sweep(DIR_CSV_ARCHIVE, DEEP_ARCHIVE_CSV)
+        
+        total_swept = len(core_swept) + len(csv_swept)
+        print(f"System: Deep Freeze Sweep complete. {total_swept} file(s) moved to offline archive.")
             
     except Exception as e:
         print(f"\n[FATAL EXECUTION HALT] {e}")

@@ -1,13 +1,16 @@
 #alu_utils.py
 #"""
 #Avenue C Deterministic ALU (Arithmetic Logic Unit)
-#Date: 2026-09-15
-#Version: 2.0.1 (System-Wide FP Dust Vaporization & Header Regex)
+#Date: 2026-09-16
+#Version: 2.1.0 (Deep Freeze Archival Sweep Integration)
 #Role: Isolates all deterministic parsing, math, and ledger mutations from the LLM.
 #"""
-__version__ = "2.0.1"
-__date__ = "2026-09-15"
+__version__ = "2.1.0"
+__date__ = "2026-09-16"
 
+import os
+import shutil
+import time
 import re
 from datetime import datetime
 import pandas as pd
@@ -397,3 +400,33 @@ def update_ledger_text(ledger_text: str, liquidations: list, total_withdrawal: f
     new_text = deduct_macro(r'(COMBINED TOTAL SYSTEM CAPITAL:\s*)\$?([\d,\.]+)', new_text, total_withdrawal)
 
     return new_text, new_variance, new_headroom
+
+# ==============================================================================
+# SECTION 4: ARCHIVAL & DEEP FREEZE OPERATIONS
+# ==============================================================================
+def execute_deep_freeze_sweep(archive_dir: str, deep_archive_dir: str) -> list:
+    """
+    Pure function: Sweeps an archive directory and moves files older than 30 days 
+    to the deep archive directory.
+    """
+    moved_files = []
+    if not os.path.exists(archive_dir):
+        return moved_files
+        
+    os.makedirs(deep_archive_dir, exist_ok=True)
+    
+    current_time = time.time()
+    thirty_days_in_seconds = 30 * 24 * 60 * 60
+    
+    for filename in os.listdir(archive_dir):
+        filepath = os.path.join(archive_dir, filename)
+        if os.path.isfile(filepath):
+            file_mtime = os.path.getmtime(filepath)
+            if (current_time - file_mtime) > thirty_days_in_seconds:
+                dest_path = os.path.join(deep_archive_dir, filename)
+                if os.path.exists(dest_path):
+                    os.remove(dest_path)
+                shutil.move(filepath, dest_path)
+                moved_files.append(filename)
+                
+    return moved_files
