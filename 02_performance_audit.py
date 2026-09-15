@@ -2,10 +2,10 @@
 #"""
 #Fund Performance & Structural Audit Engine
 #Date: 2026-09-16
-#Version: 2.0.0 (Centralized .env Pathing & Deep Freeze Sweep)
+#Version: 2.0.1 (Deterministic Trade Execution Roster)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 __date__ = "2026-09-16"
 
 import os
@@ -166,6 +166,7 @@ def identify_audit_targets(taxable_holdings: dict, min_days: int, ticker_map: di
         gl_value = data['Total Gain $']
         basis = data['Basis $']
         value = data['Value $']
+        quantity = data.get('Quantity', 0.0)
         acq_date_str = data.get('Date Acquired', '')
         
         # Prevent division by zero
@@ -198,6 +199,7 @@ def identify_audit_targets(taxable_holdings: dict, min_days: int, ticker_map: di
             safe_proxies = alu_utils.get_safe_proxies(ticker, active_symbols, lockouts)
             targets.append({
                 'Symbol': ticker, 'Bucket': t_info['Bucket'], 'Account': t_info['Account'],
+                'Shares': quantity,
                 'Cost_Basis': basis, 'Value': value, 'Unrealized_GL': gl_value,
                 'Unrealized_GL_Pct': gl_pct, 'Reason': reason, 'Vetted_Proxies': safe_proxies
             })
@@ -384,7 +386,7 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
 # ==============================================================================
 # PHASE 5: FINAL MARKDOWN RENDERING & FILE GENERATION
 # ==============================================================================
-def finalize_audit(chat_session):
+def finalize_audit(chat_session, targets):
     print(f"\n{ANSI_CYAN}[System] Compiling final agreed-upon state...{ANSI_RESET}")
     date_str = datetime.now().strftime("%Y-%m-%d")
     base_name = f"Fund_Performance_and_Structural_Audit_{date_str}"
@@ -432,6 +434,17 @@ def finalize_audit(chat_session):
     except Exception as e:
         print(f"{ANSI_RED}[FATAL ERROR] Failed to generate final report: {e}{ANSI_RESET}")
         sys.exit(1)
+        
+    if targets:
+        appendix = "\n\n================================================================================\n"
+        appendix += "DETERMINISTIC TRADE EXECUTION ROSTER (PYTHON GENERATED)\n"
+        appendix += "================================================================================\n"
+        appendix += "The following data is mathematically extracted directly from the CSV and Ledger.\n"
+        appendix += "Use these exact figures for any approved Tax-Loss Harvesting trades above.\n\n"
+        for t in targets:
+            appendix += f"  * {t['Symbol']:<5} : Sell ALL {t['Shares']:.4f} shares | Location: {t['Bucket']} (Account {t['Account']})\n"
+        appendix += "================================================================================\n"
+        final_text += appendix
         
     with open(final_filepath, "w", encoding="utf-8") as f:
         f.write(final_text.strip())
@@ -533,7 +546,7 @@ def main():
     )
     
     # 7. Finalize & Cleanup
-    finalize_audit(chat_session)
+    finalize_audit(chat_session, targets)
     cleanup_csv_files()
 
     print(f"\n{ANSI_CYAN}[System] Executing 30-Day Deep Freeze Sweep...{ANSI_RESET}")
