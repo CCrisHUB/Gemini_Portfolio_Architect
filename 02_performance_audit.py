@@ -1,12 +1,12 @@
 #02_performance_audit.py
 #"""
 #Fund Performance & Structural Audit Engine
-#Date: 2026-09-12
-#Version: 1.9.0 (State Tax Integration for Yield Calculations)
+#Date: 2026-09-16
+#Version: 2.0.0 (Centralized .env Pathing & Deep Freeze Sweep)
 #Role: Ingests CSVs, evaluates tax-loss targets, and interfaces with Gemini API.
 #"""
-__version__ = "1.9.0"
-__date__ = "2026-09-12"
+__version__ = "2.0.0"
+__date__ = "2026-09-16"
 
 import os
 import sys
@@ -29,21 +29,36 @@ ANSI_CYAN = "\033[96m"
 ANSI_RESET = "\033[0m"
 
 # ==============================================================================
-# MASTER CONFIGURATION & DIRECTORY STRUCTURE
+# MASTER CONFIGURATION & DIRECTORY STRUCTURE (GEMINI PORTFOLIO ARCHITECT)
 # ==============================================================================
 LLM_MODEL_NAME = 'gemini-3.1-pro-preview'
 YIELD_TRAPS = ['JEPI', 'JEPQ', 'QYLD', 'RYLD', 'XYLD']
 
-# Hardcoded Paths based on user environment
-BASE_DIR = r"C:\10_Projects\Gemini_Portfolio_Architect"
-CORE_DIR = os.path.join(BASE_DIR, "00_CORE_Files")
-OLD_CORE_DIR = os.path.join(BASE_DIR, "05_OLD_Core_Files")
-CSV_CURRENT_DIR = os.path.join(BASE_DIR, "20_CSV_Downloads_Current")
-CSV_OLD_DIR = os.path.join(BASE_DIR, "50_OLD_CSV_Files")
-REPORTS_DIR = os.path.join(BASE_DIR, "70 REPORTS")
+load_dotenv()  # Load environment variables globally
+
+GEMINI_ROOT = os.environ.get("GEMINI_ROOT", r"C:\OneDrive\10_Projects\Gemini_Portfolio_Architect")
+GEMINI_DEEP_ARCHIVE_ROOT = os.environ.get("GEMINI_DEEP_ARCHIVE_ROOT", r"C:\Archive\Gemini_Portfolio_Architect")
+
+# Active Directories
+DIR_CORE_ACTIVE = os.path.join(GEMINI_ROOT, "00_CORE_Files")
+DIR_CSV_ACTIVE = os.path.join(GEMINI_ROOT, "20_CSV_Downloads_Current")
+DIR_REPORTS_ACTIVE = os.path.join(GEMINI_ROOT, "70_REPORTS")
+DIR_STATEMENTS_ACTIVE = os.path.join(GEMINI_ROOT, "80_STATEMENTS")
+
+# Archive Directories
+DIR_CORE_ARCHIVE = os.path.join(GEMINI_ROOT, "05_OLD_Core_Files")
+DIR_CSV_ARCHIVE = os.path.join(GEMINI_ROOT, "50_OLD_CSV_Files")
+DIR_REPORTS_ARCHIVE = os.path.join(GEMINI_ROOT, "75_OLD_REPORTS")
+DIR_STATEMENTS_ARCHIVE = os.path.join(GEMINI_ROOT, "85_OLD_STATEMENTS")
+
+# Deep Archive Directories
+DEEP_ARCHIVE_CORE = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "05_OLD_Core_Files")
+DEEP_ARCHIVE_CSV = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "50_OLD_CSV_Files")
+DEEP_ARCHIVE_REPORTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "75_OLD_REPORTS")
+DEEP_ARCHIVE_STATEMENTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "85_OLD_STATEMENTS")
 
 # Ensure all required directories exist
-for directory in [CORE_DIR, OLD_CORE_DIR, CSV_CURRENT_DIR, CSV_OLD_DIR, REPORTS_DIR]:
+for directory in [DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE, DIR_CSV_ACTIVE, DIR_CSV_ARCHIVE, DIR_REPORTS_ACTIVE]:
     os.makedirs(directory, exist_ok=True)
 
 # ==============================================================================
@@ -67,17 +82,17 @@ def load_file_content(filepath: str) -> str:
 def cleanup_csv_files():
     """Moves all CSV files from the current staging folder to the old folder."""
     print(f"\n{ANSI_CYAN}[System] Moving processed CSV files to OLD directory...{ANSI_RESET}")
-    csv_files = glob.glob(os.path.join(CSV_CURRENT_DIR, "*.csv"))
+    csv_files = glob.glob(os.path.join(DIR_CSV_ACTIVE, "*.csv"))
     
     for file_path in csv_files:
         filename = os.path.basename(file_path)
-        dest_path = os.path.join(CSV_OLD_DIR, filename)
+        dest_path = os.path.join(DIR_CSV_ARCHIVE, filename)
         
         if os.path.exists(dest_path):
             os.remove(dest_path)
             
         shutil.move(file_path, dest_path)
-    print(f"{ANSI_GREEN}[System] Successfully moved {len(csv_files)} CSV file(s) to {CSV_OLD_DIR}.{ANSI_RESET}")
+    print(f"{ANSI_GREEN}[System] Successfully moved {len(csv_files)} CSV file(s) to {DIR_CSV_ARCHIVE}.{ANSI_RESET}")
 
 def get_next_version_number(directory: str, base_filename: str) -> int:
     """Scans the REPORTS directory to find the next version number."""
@@ -325,9 +340,9 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
         
     date_str = datetime.now().strftime("%Y-%m-%d")
     base_proposal_name = f"Fund_Performance_and_Structural_Audit_{date_str}_PROPOSAL"
-    next_prop_version = get_next_version_number(REPORTS_DIR, base_proposal_name)
+    next_prop_version = get_next_version_number(DIR_REPORTS_ACTIVE, base_proposal_name)
     proposal_filename = f"{base_proposal_name}_v{next_prop_version}.txt"
-    proposal_filepath = os.path.join(REPORTS_DIR, proposal_filename)
+    proposal_filepath = os.path.join(DIR_REPORTS_ACTIVE, proposal_filename)
     
     with open(proposal_filepath, "w", encoding="utf-8") as f:
         f.write(proposal_text)
@@ -350,9 +365,9 @@ def generate_and_review_proposal(client, portfolio_data: str, search_data: str, 
         print(f"{ANSI_CYAN}[System] Sending to {LLM_MODEL_NAME}...{ANSI_RESET}")
         try:
             reply = chat_session.send_message(user_input)
-            next_prop_version = get_next_version_number(REPORTS_DIR, base_proposal_name)
+            next_prop_version = get_next_version_number(DIR_REPORTS_ACTIVE, base_proposal_name)
             followup_filename = f"{base_proposal_name}_v{next_prop_version}.txt"
-            followup_filepath = os.path.join(REPORTS_DIR, followup_filename)
+            followup_filepath = os.path.join(DIR_REPORTS_ACTIVE, followup_filename)
             
             with open(followup_filepath, "w", encoding="utf-8") as f:
                 f.write(reply.text)
@@ -374,9 +389,9 @@ def finalize_audit(chat_session):
     date_str = datetime.now().strftime("%Y-%m-%d")
     base_name = f"Fund_Performance_and_Structural_Audit_{date_str}"
     
-    next_version = get_next_version_number(REPORTS_DIR, base_name)
+    next_version = get_next_version_number(DIR_REPORTS_ACTIVE, base_name)
     final_filename = f"{base_name}_v{next_version}.txt"
-    final_filepath = os.path.join(REPORTS_DIR, final_filename)
+    final_filepath = os.path.join(DIR_REPORTS_ACTIVE, final_filename)
     
     final_prompt = f"""
     The user has finalized the session. 
@@ -447,15 +462,15 @@ def main():
     # 1. Locate Core Files
     while True:
         try:
-            constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
-            ledger_file = get_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
-            instructions_file = get_latest_file(CORE_DIR, "Fiduciary_Architect_Instructions_*.txt")
+            constants_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt")
+            ledger_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Portfolio_Ledger_*.txt")
+            instructions_file = get_latest_file(DIR_CORE_ACTIVE, "Fiduciary_Architect_Instructions_*.txt")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(constants_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ledger_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(instructions_file)}{ANSI_RESET}")
             break
         except FileNotFoundError as e:
-            print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{CORE_DIR}'.{ANSI_RESET}")
+            print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{DIR_CORE_ACTIVE}'.{ANSI_RESET}")
             print(f"{ANSI_YELLOW}{e}{ANSI_RESET}")
             user_input = input(f"{ANSI_CYAN}Press ENTER to retry, or type 'exit' to quit: {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
@@ -466,13 +481,13 @@ def main():
     print("You DO NOT need to download the 'AllAccounts' or 'RealizedGains' CSVs for this module.")
     while True:
         try:
-            brokerage_csv = get_latest_file(CSV_CURRENT_DIR, "PortfolioDownload_2-8*.csv")
-            ira_csv = get_latest_file(CSV_CURRENT_DIR, "PortfolioDownload_5669*.csv")
+            brokerage_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_2-8*.csv")
+            ira_csv = get_latest_file(DIR_CSV_ACTIVE, "PortfolioDownload_5669*.csv")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(brokerage_csv)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ira_csv)}{ANSI_RESET}")
             break
         except FileNotFoundError:
-            print(f"\n{ANSI_RED}❌ ERROR: Missing required CSV files in '{CSV_CURRENT_DIR}'.{ANSI_RESET}")
+            print(f"\n{ANSI_RED}❌ ERROR: Missing required CSV files in '{DIR_CSV_ACTIVE}'.{ANSI_RESET}")
             print(f"{ANSI_YELLOW}Please ensure both '2-8' (Brokerage) and '5669' (IRA) CSVs are present.{ANSI_RESET}")
             user_input = input(f"{ANSI_CYAN}Place them in the folder and press ENTER to retry (or type 'exit'): {ANSI_RESET}").strip()
             if user_input.lower() == 'exit': sys.exit(0)
@@ -520,6 +535,13 @@ def main():
     # 7. Finalize & Cleanup
     finalize_audit(chat_session)
     cleanup_csv_files()
+
+    print(f"\n{ANSI_CYAN}[System] Executing 30-Day Deep Freeze Sweep...{ANSI_RESET}")
+    core_swept = alu_utils.execute_deep_freeze_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE)
+    csv_swept = alu_utils.execute_deep_freeze_sweep(DIR_CSV_ARCHIVE, DEEP_ARCHIVE_CSV)
+    reports_swept = alu_utils.execute_deep_freeze_sweep(DIR_REPORTS_ARCHIVE, DEEP_ARCHIVE_REPORTS)
+    total_swept = len(core_swept) + len(csv_swept) + len(reports_swept)
+    print(f"{ANSI_GREEN}[System] Deep Freeze Sweep complete. {total_swept} file(s) moved to offline archive.{ANSI_RESET}")
 
 if __name__ == "__main__":
     main()
