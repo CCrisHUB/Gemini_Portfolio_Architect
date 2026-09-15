@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-16
-#Version: 2.4.0 (OneDrive Decoupling & Deep Freeze Sweep)
+#Version: 2.4.1 (Centralized .env Pathing Architecture)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.4.0"
+__version__ = "2.4.1"
 __date__ = "2026-09-16"
 
 import os
@@ -19,11 +19,14 @@ from google.genai import types
 from dotenv import load_dotenv
 import alu_utils
 
+load_dotenv()  # Load environment variables globally
+
 # ==============================================================================
 # MASTER CONFIGURATION & DIRECTORY STRUCTURE (GEMINI PORTFOLIO ARCHITECT)
 # ==============================================================================
-GEMINI_ROOT = r"C:\OneDrive\10_Projects\Gemini_Portfolio_Architect"
-GEMINI_DEEP_ARCHIVE_ROOT = r"C:\Archive\Gemini_Portfolio_Architect"
+# Fallbacks provided to prevent crashes if .env is missing
+GEMINI_ROOT = os.environ.get("GEMINI_ROOT", r"C:\OneDrive\10_Projects\Gemini_Portfolio_Architect")
+GEMINI_DEEP_ARCHIVE_ROOT = os.environ.get("GEMINI_DEEP_ARCHIVE_ROOT", r"C:\Archive\Gemini_Portfolio_Architect")
 
 # Active Directories
 DIR_CORE_ACTIVE = os.path.join(GEMINI_ROOT, "00_CORE_Files")
