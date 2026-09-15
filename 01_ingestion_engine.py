@@ -2,10 +2,10 @@
 #"""
 #Avenue C Ingestion Engine
 #Date: 2026-09-16
-#Version: 2.4.1 (Centralized .env Pathing Architecture)
+#Version: 2.4.2 (Deterministic Taxable G&L Details Isolation)
 #Role: Ingests E*TRADE CSVs, parses Core Files, queries Gemini API, and archives state.
 #"""
-__version__ = "2.4.1"
+__version__ = "2.4.2"
 __date__ = "2026-09-16"
 
 import os
@@ -162,25 +162,35 @@ def process_tax_and_wash_sales(tax_ledger_text, gains_files, sold_tickers, routi
                 with open(gf, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
                     
-                summary_idx = next((i for i, line in enumerate(lines) if 'TAXABLE G&L SUMMARY' in line), -1)
-                if summary_idx == -1:
+                details_idx = next((i for i, line in enumerate(lines) if 'TAXABLE G&L DETAILS' in line), -1)
+                if details_idx == -1:
                     continue
                     
-                clean_lines = [line.strip().rstrip(',') for line in lines[summary_idx+1:summary_idx+3]]
-                summary_csv = "\n".join(clean_lines)
+                details_csv = ""
+                for line in lines[details_idx+1:]:
+                    if line.strip() == "" or "Generated at" in line:
+                        break
+                    details_csv += line
+                    
                 import pandas as pd
                 import io
-                df = pd.read_csv(io.StringIO(summary_csv), on_bad_lines='skip')
-                df.columns = df.columns.str.strip().str.lower()
+                df = pd.read_csv(io.StringIO(details_csv), on_bad_lines='skip')
+                df.columns = df.columns.str.strip()
                 
                 file_stcg, file_ltcg = 0.0, 0.0
-                st_cols = [c for c in df.columns if 'short' in c and 'gain' in c]
-                lt_cols = [c for c in df.columns if 'long' in c and 'gain' in c]
-                
-                if st_cols:
-                    file_stcg = pd.to_numeric(df[st_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
-                if lt_cols:
-                    file_ltcg = pd.to_numeric(df[lt_cols[0]].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce').fillna(0).sum()
+                for ticker in sold_tickers:
+                    ticker_row = df[df['Symbol'] == ticker]
+                    if not ticker_row.empty:
+                        gain_str = str(ticker_row['Gain $'].values[0]).replace('$', '').replace(',', '')
+                        term_str = str(ticker_row['Term'].values[0]).strip().lower()
+                        try:
+                            gain_val = float(gain_str)
+                        except ValueError:
+                            gain_val = 0.0
+                        if 'short' in term_str:
+                            file_stcg += gain_val
+                        elif 'long' in term_str:
+                            file_ltcg += gain_val
                     
                 new_stcg += file_stcg
                 new_ltcg += file_ltcg
