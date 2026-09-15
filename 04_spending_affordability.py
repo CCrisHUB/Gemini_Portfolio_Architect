@@ -1,12 +1,12 @@
 #04_spending_affordability.py
 #"""
 #Spending Request & Affordability Evaluation Engine
-#Date: 2026-09-15
-#Version: 1.1.0 (ALU Refactor & UX Transparency Upgrade)
+#Date: 2026-09-16
+#Version: 1.2.0 (Centralized .env Pathing & Deep Freeze Sweep)
 #Role: Evaluates discretionary spending requests against liquidity and market telemetry.
 #"""
-__version__ = "1.1.0"
-__date__ = "2026-09-15"
+__version__ = "1.2.0"
+__date__ = "2026-09-16"
 
 import os
 import sys
@@ -28,15 +28,34 @@ ANSI_CYAN = "\033[96m"
 ANSI_RESET = "\033[0m"
 
 # ==============================================================================
-# MASTER CONFIGURATION & DIRECTORY STRUCTURE
+# MASTER CONFIGURATION & DIRECTORY STRUCTURE (GEMINI PORTFOLIO ARCHITECT)
 # ==============================================================================
 LLM_MODEL_NAME = 'gemini-3.1-pro-preview'
 
-BASE_DIR = r"C:\10_Projects\Gemini_Portfolio_Architect"
-CORE_DIR = os.path.join(BASE_DIR, "00_CORE_Files")
-REPORTS_DIR = os.path.join(BASE_DIR, "70 REPORTS")
+load_dotenv()  # Load environment variables globally
 
-for directory in [CORE_DIR, REPORTS_DIR]:
+GEMINI_ROOT = os.environ.get("GEMINI_ROOT", r"C:\OneDrive\10_Projects\Gemini_Portfolio_Architect")
+GEMINI_DEEP_ARCHIVE_ROOT = os.environ.get("GEMINI_DEEP_ARCHIVE_ROOT", r"C:\Archive\Gemini_Portfolio_Architect")
+
+# Active Directories
+DIR_CORE_ACTIVE = os.path.join(GEMINI_ROOT, "00_CORE_Files")
+DIR_CSV_ACTIVE = os.path.join(GEMINI_ROOT, "20_CSV_Downloads_Current")
+DIR_REPORTS_ACTIVE = os.path.join(GEMINI_ROOT, "70_REPORTS")
+DIR_STATEMENTS_ACTIVE = os.path.join(GEMINI_ROOT, "80_STATEMENTS")
+
+# Archive Directories
+DIR_CORE_ARCHIVE = os.path.join(GEMINI_ROOT, "05_OLD_Core_Files")
+DIR_CSV_ARCHIVE = os.path.join(GEMINI_ROOT, "50_OLD_CSV_Files")
+DIR_REPORTS_ARCHIVE = os.path.join(GEMINI_ROOT, "75_OLD_REPORTS")
+DIR_STATEMENTS_ARCHIVE = os.path.join(GEMINI_ROOT, "85_OLD_STATEMENTS")
+
+# Deep Archive Directories
+DEEP_ARCHIVE_CORE = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "05_OLD_Core_Files")
+DEEP_ARCHIVE_CSV = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "50_OLD_CSV_Files")
+DEEP_ARCHIVE_REPORTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "75_OLD_REPORTS")
+DEEP_ARCHIVE_STATEMENTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "85_OLD_STATEMENTS")
+
+for directory in [DIR_CORE_ACTIVE, DIR_REPORTS_ACTIVE]:
     os.makedirs(directory, exist_ok=True)
 
 # ==============================================================================
@@ -121,9 +140,9 @@ def generate_final_report(client, requested: float, budget: float, yield_data: d
     
     date_str = datetime.now().strftime("%Y-%m-%d")
     base_name = f"Discretionary_Spending_Request_Audit_{date_str}"
-    next_version = get_next_version_number(REPORTS_DIR, base_name)
+    next_version = get_next_version_number(DIR_REPORTS_ACTIVE, base_name)
     final_filename = f"{base_name}_v{next_version}.txt"
-    final_filepath = os.path.join(REPORTS_DIR, final_filename)
+    final_filepath = os.path.join(DIR_REPORTS_ACTIVE, final_filename)
     
     if yield_data['is_cold_start']:
         yield_str = f"{effective_yield:.2f}% (Cold-Start Macro Proxy Active)"
@@ -224,13 +243,13 @@ def main():
     ledger_file = None
     while True:
         try:
-            constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
-            ledger_file = get_latest_file(CORE_DIR, "GEM_Retirement_Portfolio_Ledger_*.txt")
+            constants_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt")
+            ledger_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Portfolio_Ledger_*.txt")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(constants_file)}{ANSI_RESET}")
             print(f"{ANSI_GREEN}✅ Detected: {os.path.basename(ledger_file)}{ANSI_RESET}")
             break
         except FileNotFoundError as e:
-            print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{CORE_DIR}'.{ANSI_RESET}")
+            print(f"\n{ANSI_RED}❌ ERROR: Missing Core Files in '{DIR_CORE_ACTIVE}'.{ANSI_RESET}")
             print(f"{ANSI_YELLOW}{e}{ANSI_RESET}")
             retry = input(f"{ANSI_CYAN}Press ENTER to retry, or type 'exit' to quit: {ANSI_RESET}").strip()
             if retry.lower() == 'exit': sys.exit(0)
@@ -282,6 +301,12 @@ def main():
         directive=directive,
         effective_yield=effective_portfolio_yield
     )
+
+    print(f"\n{ANSI_CYAN}[System] Executing 30-Day Deep Freeze Sweep...{ANSI_RESET}")
+    core_swept = alu_utils.execute_deep_freeze_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE)
+    reports_swept = alu_utils.execute_deep_freeze_sweep(DIR_REPORTS_ARCHIVE, DEEP_ARCHIVE_REPORTS)
+    total_swept = len(core_swept) + len(reports_swept)
+    print(f"{ANSI_GREEN}[System] Deep Freeze Sweep complete. {total_swept} file(s) moved to offline archive.{ANSI_RESET}")
 
 if __name__ == "__main__":
     main()
