@@ -1,12 +1,12 @@
 #07_expense_patching.py
 #"""
 #Expense Payload Patching Engine
-#Date: 2026-09-15
-#Version: 1.0.0 (Avenue C Port)
+#Date: 2026-09-16
+#Version: 1.1.0 (Centralized .env Pathing & Deep Freeze Sweep)
 #Role: Injects the Financial Ingestion Payload into Core File 1.
 #"""
-__version__ = "1.0.0"
-__date__ = "2026-09-15"
+__version__ = "1.1.0"
+__date__ = "2026-09-16"
 
 import os
 import sys
@@ -14,6 +14,8 @@ import glob
 import re
 import shutil
 from datetime import datetime
+from dotenv import load_dotenv
+import alu_utils
 
 # ==============================================================================
 # ANSI UX FORMATTING CONSTANTS
@@ -25,14 +27,32 @@ ANSI_CYAN = "\033[96m"
 ANSI_RESET = "\033[0m"
 
 # ==============================================================================
-# MASTER CONFIGURATION & DIRECTORY STRUCTURE
+# MASTER CONFIGURATION & DIRECTORY STRUCTURE (GEMINI PORTFOLIO ARCHITECT)
 # ==============================================================================
-BASE_DIR = r"C:\10_Projects\Gemini_Portfolio_Architect"
-CORE_DIR = os.path.join(BASE_DIR, "00_CORE_Files")
-OLD_CORE_DIR = os.path.join(BASE_DIR, "05_OLD_Core_Files")
-PAYLOAD_DIR = os.path.join(BASE_DIR, "20_CSV_Downloads_Current") # Assuming payload drops here
+load_dotenv()  # Load environment variables globally
 
-for directory in [CORE_DIR, OLD_CORE_DIR, PAYLOAD_DIR]:
+GEMINI_ROOT = os.environ.get("GEMINI_ROOT", r"C:\OneDrive\10_Projects\Gemini_Portfolio_Architect")
+GEMINI_DEEP_ARCHIVE_ROOT = os.environ.get("GEMINI_DEEP_ARCHIVE_ROOT", r"C:\Archive\Gemini_Portfolio_Architect")
+
+# Active Directories
+DIR_CORE_ACTIVE = os.path.join(GEMINI_ROOT, "00_CORE_Files")
+DIR_CSV_ACTIVE = os.path.join(GEMINI_ROOT, "20_CSV_Downloads_Current")
+DIR_REPORTS_ACTIVE = os.path.join(GEMINI_ROOT, "70_REPORTS")
+DIR_STATEMENTS_ACTIVE = os.path.join(GEMINI_ROOT, "80_STATEMENTS")
+
+# Archive Directories
+DIR_CORE_ARCHIVE = os.path.join(GEMINI_ROOT, "05_OLD_Core_Files")
+DIR_CSV_ARCHIVE = os.path.join(GEMINI_ROOT, "50_OLD_CSV_Files")
+DIR_REPORTS_ARCHIVE = os.path.join(GEMINI_ROOT, "75_OLD_REPORTS")
+DIR_STATEMENTS_ARCHIVE = os.path.join(GEMINI_ROOT, "85_OLD_STATEMENTS")
+
+# Deep Archive Directories
+DEEP_ARCHIVE_CORE = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "05_OLD_Core_Files")
+DEEP_ARCHIVE_CSV = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "50_OLD_CSV_Files")
+DEEP_ARCHIVE_REPORTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "75_OLD_REPORTS")
+DEEP_ARCHIVE_STATEMENTS = os.path.join(GEMINI_DEEP_ARCHIVE_ROOT, "85_OLD_STATEMENTS")
+
+for directory in [DIR_CORE_ACTIVE, DIR_CORE_ARCHIVE, DIR_CSV_ACTIVE, DIR_CSV_ARCHIVE]:
     os.makedirs(directory, exist_ok=True)
 
 # ==============================================================================
@@ -63,7 +83,7 @@ def main():
     # 1. Locate Files
     print(f"\n{ANSI_CYAN}[System] Locating Core File 1 and Ingestion Payload...{ANSI_RESET}")
     try:
-        constants_file = get_latest_file(CORE_DIR, "GEM_Retirement_Master_Profile_Constants_*.txt")
+        constants_file = get_latest_file(DIR_CORE_ACTIVE, "GEM_Retirement_Master_Profile_Constants_*.txt")
         print(f"{ANSI_GREEN}✅ Detected Core File 1: {os.path.basename(constants_file)}{ANSI_RESET}")
     except FileNotFoundError as e:
         print(f"{ANSI_RED}[FATAL ERROR] {e}{ANSI_RESET}")
@@ -71,11 +91,11 @@ def main():
 
     while True:
         try:
-            payload_file = get_latest_file(PAYLOAD_DIR, "Ingestion_Expense_Payload_FINAL_*.txt")
+            payload_file = get_latest_file(DIR_CSV_ACTIVE, "Ingestion_Expense_Payload_FINAL_*.txt")
             print(f"{ANSI_GREEN}✅ Detected Payload: {os.path.basename(payload_file)}{ANSI_RESET}")
             break
         except FileNotFoundError:
-            print(f"\n{ANSI_RED}❌ ERROR: Missing 'Ingestion_Expense_Payload_FINAL_*.txt' in '{PAYLOAD_DIR}'.{ANSI_RESET}")
+            print(f"\n{ANSI_RED}❌ ERROR: Missing 'Ingestion_Expense_Payload_FINAL_*.txt' in '{DIR_CSV_ACTIVE}'.{ANSI_RESET}")
             retry = input(f"{ANSI_CYAN}Place the file in the folder and press ENTER to retry (or type 'exit'): {ANSI_RESET}").strip()
             if retry.lower() == 'exit': sys.exit(0)
 
@@ -111,19 +131,17 @@ def main():
     
     # 5. Save New File
     final_filename = f"GEM_Retirement_Master_Profile_Constants_{today}_v{new_version}.txt"
-    final_filepath = os.path.join(CORE_DIR, final_filename)
+    final_filepath = os.path.join(DIR_CORE_ACTIVE, final_filename)
     
     with open(final_filepath, "w", encoding="utf-8") as f:
         f.write(new_constants_text)
         
     # 6. Clean Room Archiving
     old_constants_name = os.path.basename(constants_file)
-    shutil.move(constants_file, os.path.join(OLD_CORE_DIR, old_constants_name))
+    shutil.move(constants_file, os.path.join(DIR_CORE_ARCHIVE, old_constants_name))
     
     # Move the payload to the old CSV folder to keep the active directory clean
-    old_csv_dir = os.path.join(BASE_DIR, "50_OLD_CSV_Files")
-    os.makedirs(old_csv_dir, exist_ok=True)
-    shutil.move(payload_file, os.path.join(old_csv_dir, os.path.basename(payload_file)))
+    shutil.move(payload_file, os.path.join(DIR_CSV_ARCHIVE, os.path.basename(payload_file)))
     
     print(f"\n{ANSI_GREEN}" + "="*60)
     print(f" [SUCCESS] Payload injection successful.")
@@ -131,6 +149,12 @@ def main():
     print(f" [SUCCESS] Old Core File Archived: {old_constants_name}")
     print(" [SYSTEM] Execution Complete. Terminating.")
     print("="*60 + f"{ANSI_RESET}\n")
+
+    print(f"\n{ANSI_CYAN}[System] Executing 30-Day Deep Freeze Sweep...{ANSI_RESET}")
+    core_swept = alu_utils.execute_deep_freeze_sweep(DIR_CORE_ARCHIVE, DEEP_ARCHIVE_CORE)
+    csv_swept = alu_utils.execute_deep_freeze_sweep(DIR_CSV_ARCHIVE, DEEP_ARCHIVE_CSV)
+    total_swept = len(core_swept) + len(csv_swept)
+    print(f"{ANSI_GREEN}[System] Deep Freeze Sweep complete. {total_swept} file(s) moved to offline archive.{ANSI_RESET}")
 
 if __name__ == "__main__":
     main()
